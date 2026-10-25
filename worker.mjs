@@ -1,3 +1,5 @@
+import {customsInteraction, customsFetch} from './customs.mjs';
+
 /**
  * Glutony — Discord user-installable Roblox 8v8 and Pro server browser on Cloudflare Workers.
  * No packages or Gateway connection required; paste this whole file in a Worker.
@@ -469,12 +471,11 @@ async function renderDetail(interaction, env, mode, jobId, page, sort, refresh, 
 
 async function onInteraction(interaction, env, ctx, origin) {
   if (interaction.type === 1) return responseCallback(1);
+  if (interaction.type === 5 && interaction.data?.custom_id === 'c:modal') return customsInteraction(interaction, env, ctx);
+  if (interaction.type === 3 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
   if (interaction.type === 2 && interaction.data?.name === 'blr') {
     const params = Object.fromEntries((interaction.data.options || []).map(v => [v.name, v.value]));
-    if (params.mode === 'customs') return responseCallback(4, {
-      content: '⚽ **Glutony Customs is planned!** Soon, players will be able to share private-server invitations and find teammates.',
-      flags: 64, allowed_mentions: {parse: []},
-    });
+    if (params.mode === 'customs') return customsInteraction(interaction, env, ctx);
     if (!MODES[params.mode]) return responseCallback(4, {content: 'Unknown mode.', flags:64});
     const sort = ['players', 'space', 'ping'].includes(params.sort) ? params.sort : 'players';
     ctx.waitUntil(renderList(interaction, env, params.mode, 0, sort, false));
@@ -636,6 +637,8 @@ async function registerCommand(request, env) {
 
 export default {
   async fetch(request, env, ctx) {
+    const customsResponse = await customsFetch(request, env);
+    if (customsResponse) return customsResponse;
     const { pathname } = new URL(request.url);
     if (request.method === 'GET' && pathname === '/') {
       return json({ bot: 'Glutony', status: 'online', mode: 'Cloudflare Workers', interaction_endpoint: '/interactions' });
