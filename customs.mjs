@@ -195,7 +195,7 @@ function detailView(item,page){
  ]);
 }
 function createModal(){
- const field=(id,label,style,required,max)=>({type:1,components:[{type:4,custom_id:id,label,style,required,max_length:max,min_length:required?4:0}]});
+ const field=(id,label,style,required,max)=>({type:18,label,component:{type:4,custom_id:id,style,required,max_length:max,min_length:required?4:0}});
  return {type:9,data:{custom_id:'c:modal',title:'Post a BL:R custom match',components:[
   field('title','Match title',1,true,64),
   field('link','Roblox private server share URL',1,true,220),
@@ -231,7 +231,7 @@ async function discordAsync(i,env,job){
 }
 function modalValues(i){
  const result={};
- for(const outer of i.data?.components||[])for(const field of outer.components||[])if(field.custom_id)result[field.custom_id]=field.value||'';
+ for(const outer of i.data?.components||[]){const fields=outer.component?[outer.component]:(outer.components||[]);for(const field of fields)if(field.custom_id)result[field.custom_id]=field.value||'';}
  return result;
 }
 export function customsInteraction(i,env,ctx){
