@@ -155,6 +155,26 @@ assert.ok(Array.isArray((await avatars.json()).images));
 const options=await worker.fetch(new Request('https://glutony.example/api/servers',{method:'OPTIONS'}),env,{});
 assert.equal(options.status,204);
 
+// Targeted passive region refresh: only known live Job IDs, no player tokens.
+const regionRefresh = await worker.fetch(
+  new Request('https://glutony.example/api/servers/regions?mode=8v8&ids='+server8),env,{});
+assert.equal(regionRefresh.status,200);
+assert.equal(regionRefresh.headers.get('access-control-allow-origin'),'https://blr.n29.kz');
+const regionsPayload = await regionRefresh.json();
+assert.equal(regionsPayload.regions[server8].region,'Atlanta, Georgia, United States');
+assert.equal(regionsPayload.regions[server8].version,224);
+assert.ok(!JSON.stringify(regionsPayload).includes('preview1'));
+assert.equal((await worker.fetch(new Request(
+  'https://glutony.example/api/servers/regions?mode=8v8&ids=bogus'),env,{})).status,400);
+const inactive = '99999999-8888-7777-6666-555555555555';
+const inactiveResp = await worker.fetch(new Request(
+  'https://glutony.example/api/servers/regions?mode=pro&ids='+inactive),env,{});
+assert.deepEqual((await inactiveResp.json()).regions,{});
+assert.equal((await worker.fetch(new Request(
+  'https://glutony.example/api/servers/regions?mode=pro&ids='+Array(9).fill(serverPro).join(',')),env,{})).status,400);
+
+console.log('PASS: passive region refresh validates server IDs, CORS, and known server metadata');
+
 console.log('PASS: website-facing 8v8/Pro JSON, CORS, join links, validation, and optional player avatars');
 
 console.log('PASS: Glutony 8v8, Pro, flags, menus, details, join links, signature verification, and registration');
