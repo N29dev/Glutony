@@ -67,7 +67,7 @@ Optional: `CUSTOMS_MODERATOR_IDS` (Text) — comma-separated trusted Discord use
 
 ## Player counts and real server regions (October 2026)
 
-Glutony now supports **optional host-reported player counts**. They are visible on the website and in the Discord Customs list/detail view; hosts can edit the number once every 60 seconds after logging in with Discord. A new listing may be created without a player count (displayed as Unknown). Existing listings continue working with unknown counts.
+Glutony now supports **optional host-reported current player counts (0–20)**. Every BL:R private-server listing has a **fixed 20-slot capacity**; neither a host nor a website request can change the maximum. The website and Discord display `current/20`, or `?/20` when the current count is unknown. Owners can manually update the current count once every 60 seconds. Existing listings with older capacity values are displayed with the correct 20-slot cap.
 
 **One-time schema upgrade:** In the Glutony repository run:
 
@@ -81,7 +81,7 @@ This applies the new `migrations/0002_customs_player_counts.sql` to the **existi
 
 **IMPORTANT — reporting limits:** A Roblox `/share?code=...&type=Server` invitation does not publicly expose the current active `JobId` or its datacenter/occupancy. Roblox's public server-list API does **not** reliably enumerate private instances. Thus Glutony does **not** claim these are verified/live player counts or physical server regions.
 
-- `playerCurrent/playerCapacity/playerReportedAt` = optional **host-reported**, manually refreshed occupancy; shown with freshness.
+- `playerCurrent/playerCapacity/playerReportedAt` = optional **host-reported**, manually refreshed occupancy; `playerCapacity` is always 20, and never host-editable.
 - `region` = **host-selected** (the host's intended area), **not** a confirmed Roblox server/datacenter location.
 - A future truly live integration would require supported, authorized game-side telemetry from BL:R or another verified external data source. Never request or store anyone's Roblox `.ROBLOSECURITY` cookie.
 
