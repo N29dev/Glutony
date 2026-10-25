@@ -117,7 +117,7 @@ async function callbackOAuth(req,env){
  const who=await r.json();
  if(!RE_ID.test(String(who.id)))return new Response('Invalid account.',{status:400});
  const token=await tokenFor(env,{id:String(who.id),name:who.global_name||who.username});
- return new Response(null,{status:302,headers:{location:SITE+'/servers/#customs_session='+encodeURIComponent(token),'cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':'glutony_oauth=; Path=/auth/discord; Max-Age=0; HttpOnly; Secure; SameSite=Lax'}});
+ return new Response(null,{status:302,headers:{location:SITE+'/servers/?mode=customs#customs_session='+encodeURIComponent(token),'cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':'glutony_oauth=; Path=/auth/discord; Max-Age=0; HttpOnly; Secure; SameSite=Lax'}});
 }
 async function checkTurnstile(env,token){
  if(!env.CUSTOMS_TURNSTILE_SECRET||typeof token!=='string'||!token||token.length>2048)return false;
@@ -135,6 +135,12 @@ async function website(req,env){
  if(p==='/api/customs'&&req.method==='GET')return siteJson({available:!!env.CUSTOMS_DB,listings:(await fetchActive(env)).map(publicEntry)});
  const user=await websiteUser(req,env);
  if(p==='/api/customs/me'&&req.method==='GET')return user?siteJson(user):siteJson({error:'Sign in with Discord.'},401);
+ if(p==='/api/customs/mine'&&req.method==='GET') {
+  if(!user)return siteJson({error:'Sign in with Discord.'},401);
+  if(!env.CUSTOMS_DB)return siteJson({ids:[]});
+  const rows=await env.CUSTOMS_DB.prepare("SELECT id FROM customs WHERE owner_id=? AND status='active' AND expires_at>?").bind(user.id,Date.now()).all();
+  return siteJson({ids:(rows.results||[]).map(x=>x.id)});
+ }
  if(!['POST','DELETE'].includes(req.method))return siteJson({error:'Not found.'},404);
  if(req.headers.get('origin')!==SITE)return siteJson({error:'Invalid request origin.'},403);
  if(!user)return siteJson({error:'Sign in with Discord.'},401);
