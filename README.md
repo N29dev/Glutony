@@ -7,7 +7,7 @@ A Discord **user-installable** slash-command app for browsing **Blue Lock: Rival
 - Website: [blr.n29.kz/servers/customs/](https://blr.n29.kz/servers/customs/)
 - Discord: `/blr mode:customs` → browse, **Post match** modal, report, remove your own listing
 - Shared Cloudflare D1 storage keeps both interfaces synchronized; listings expire after four hours
-- Optional **host-reported** `current/max` players; owners can refresh counts once per minute (website and Discord). Requires D1 migration `0002_customs_player_counts.sql`
+- Optional **host-reported current player count** (0–20); capacity is fixed at **20 players** for every private server. Owners can refresh the count once per minute (website and Discord). Requires D1 migration `0002_customs_player_counts.sql`
 - Host-selected region is **not** guaranteed to be the server's actual datacenter. Private invite URLs don't provide trustworthy live occupancy/location metadata
 - Spam limits: verified Discord identity, one active post per user, 10-minute cooldown, three posts per day, duplicate-link blocking, reports, optional moderator bans
 - Website posts/reports also require a verified Cloudflare Turnstile token
