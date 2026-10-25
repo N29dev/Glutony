@@ -3,6 +3,10 @@ const DISCORD_API='https://discord.com/api/v10';
 const SITE='https://blr.n29.kz';
 const RE_UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const RE_ID=/^\d{15,22}$/;
+// Admins are identified only by verified Discord snowflake IDs, never by
+// client-submitted flags, display names, or guild permission claims.
+const adminIds=env=>new Set(String(env.CUSTOMS_ADMIN_IDS||'').split(/[,\s]+/).filter(v=>RE_ID.test(v)));
+const isAdmin=(env,id)=>RE_ID.test(String(id))&&adminIds(env).has(String(id));
 const HEADERS={'access-control-allow-origin':SITE,'access-control-allow-methods':'GET, POST, DELETE, OPTIONS','access-control-allow-headers':'authorization, content-type','vary':'Origin','cache-control':'no-store'};
 const json=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store',...headers}});
 const siteJson=(body,status=200)=>json(body,status,HEADERS);
@@ -38,20 +42,31 @@ async function postMatch(env,user,form){
  const d=validateForm(form);if(d.error)return {status:400,error:d.error};
  if(await env.CUSTOMS_DB.prepare('SELECT 1 FROM customs_bans WHERE owner_id=?').bind(user.id).first())return {status:403,error:'Posting is disabled for this account.'};
  const now=Date.now(),id=crypto.randomUUID(),expires=now+4*3600000;
+ const admin=isAdmin(env,user.id);
+ // The identity was verified by either a signed Discord interaction or OAuth.
+ // Admins can repost immediately after removing/expiring their previous match,
+ // and are not subject to the 3-per-day quota. All other safety checks remain:
+ // one active listing, duplicate invite check, ban list, validated Roblox URL.
+ // Keep each condition inside one INSERT to avoid concurrent submission races.
  const query="INSERT INTO customs(id,owner_id,owner_name,title,region,note,invite_url,invite_code,created_at,expires_at,status) "+
  "SELECT ?,?,?,?,?,?,?,?,?,?,'active' WHERE "+
  "NOT EXISTS(SELECT 1 FROM customs WHERE owner_id=? AND status='active' AND expires_at>?) AND "+
- "NOT EXISTS(SELECT 1 FROM customs WHERE owner_id=? AND created_at>?) AND "+
- "(SELECT COUNT(*) FROM customs WHERE owner_id=? AND created_at>?) < 3 AND "+
+ "(?=1 OR NOT EXISTS(SELECT 1 FROM customs WHERE owner_id=? AND created_at>?)) AND "+
+ "(?=1 OR (SELECT COUNT(*) FROM customs WHERE owner_id=? AND created_at>?) < 3) AND "+
  "NOT EXISTS(SELECT 1 FROM customs WHERE invite_code=? AND status='active' AND expires_at>?)";
- const result=await env.CUSTOMS_DB.prepare(query).bind(id,user.id,safe(user.name,32),d.title,d.region,d.note,d.url,d.code,now,expires,user.id,now,user.id,now-600000,user.id,now-86400000,d.code,now).run();
+ const result=await env.CUSTOMS_DB.prepare(query).bind(
+  id,user.id,safe(user.name,32),d.title,d.region,d.note,d.url,d.code,now,expires,
+  user.id,now,admin?1:0,user.id,now-600000,admin?1:0,user.id,now-86400000,d.code,now
+ ).run();
  return result.meta?.changes?{ok:true,item:{id,title:d.title,region:d.region,note:d.note,ownerName:user.name,link:d.url,createdAt:now,expiresAt:expires}}:
- {status:429,error:'Limit: 1 active post, 10-minute cooldown, 3 posts per day, and no duplicate active links.'};
+ {status:429,error:admin?
+  'You already have an active listing or this invite is already listed. Remove the old listing to repost.':
+  'Limit: 1 active post, 10-minute cooldown, 3 posts per day, and no duplicate active links.'};
 }
 async function deleteMatch(env,user,id){
  if(!env.CUSTOMS_DB)return {status:503,error:'Database unavailable.'};
  if(!RE_UUID.test(id))return {status:400,error:'Invalid listing ID.'};
- const moderator=String(env.CUSTOMS_MODERATOR_IDS||'').split(',').includes(user.id);
+ const moderator=isAdmin(env,user.id)||String(env.CUSTOMS_MODERATOR_IDS||'').split(/[,\s]+/).includes(user.id);
  const q=moderator?"UPDATE customs SET status='removed' WHERE id=? AND status='active'":"UPDATE customs SET status='removed' WHERE id=? AND owner_id=? AND status='active'";
  const res=await env.CUSTOMS_DB.prepare(q).bind(...(moderator?[id]:[id,user.id])).run();
  return res.meta?.changes?{ok:true}:{status:404,error:'Listing not found or you do not own it.'};
@@ -158,7 +173,7 @@ async function website(req,env){
  if(p==='/api/customs/config'&&req.method==='GET')return siteJson({available:!!env.CUSTOMS_DB,authReady:oauthReady(env),sitekey:env.CUSTOMS_TURNSTILE_SITEKEY||null,canPost:!!(env.CUSTOMS_DB&&oauthReady(env)&&env.CUSTOMS_TURNSTILE_SITEKEY&&env.CUSTOMS_TURNSTILE_SECRET),login:'https://glutony.scp343hey.workers.dev/auth/discord/start'});
  if(p==='/api/customs'&&req.method==='GET')return siteJson({available:!!env.CUSTOMS_DB,listings:(await fetchActive(env)).map(publicEntry)});
  const user=await websiteUser(req,env);
- if(p==='/api/customs/me'&&req.method==='GET')return user?siteJson(user):siteJson({error:'Sign in with Discord.'},401);
+ if(p==='/api/customs/me'&&req.method==='GET')return user?siteJson({...user,isAdmin:isAdmin(env,user.id)}):siteJson({error:'Sign in with Discord.'},401);
  if(p==='/api/customs/mine'&&req.method==='GET') {
   if(!user)return siteJson({error:'Sign in with Discord.'},401);
   if(!env.CUSTOMS_DB)return siteJson({ids:[]});
@@ -289,4 +304,4 @@ export async function customsFetch(request,env){
  if(!path.startsWith('/api/customs')&&!path.startsWith('/auth/discord/'))return null;
  try{return await website(request,env);}catch(e){console.error('Customs API error',e);return siteJson({error:'Customs service unavailable.'},503);}
 }
-export const _customsTest={cleanInvite,validateForm,publicEntry,browseView,detailView,createModal};
+export const _customsTest={cleanInvite,validateForm,publicEntry,browseView,detailView,createModal,isAdmin,postMatch};
