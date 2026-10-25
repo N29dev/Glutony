@@ -90,6 +90,14 @@ npm run dev
 
 To deploy manually with a Cloudflare-authenticated local account: `npm run deploy`.
 
+## Exact-instance join links (PC and mobile)
+
+Roblox has a reported bug where `https://www.roblox.com/games/start?placeId=...&gameInstanceId=...` silently ignores `gameInstanceId` and puts the player in a random server. Glutony now uses a **Glutony-hosted HTTPS landing page** at `/join` for both buttons. This page requires the player to click **Open exact server in Roblox**, targeting the direct `roblox://experiences/start?placeId=...&gameInstanceId=...` protocol. Mobile also has an AppsFlyer fallback with `deep_link_value` for Android support.
+
+The landing page validates the configured BL:R place and UUID-shaped Job ID. It never asks for login details. **No exact-server link can guarantee that Roblox respects the requested instance**, so warn users if Roblox redirects to another location. The GitHub-to-Cloudflare deployment does not require new secrets or command re-registration.
+
+Relevant docs: https://create.roblox.com/docs/production/promotion/deeplinks and reported bug https://devforum.roblox.com/t/deep-link-ignores-gameinstanceid-argument/3815549
+
 ## Message visibility
 
 `/blr mode:8v8` and `/blr mode:pro` publish **non-ephemeral** Discord messages, visible to other participants in the channel/DM. To get the new behavior, run a **new** slash command after the updated Worker deploys; older ephemeral messages cannot be converted to public ones.
