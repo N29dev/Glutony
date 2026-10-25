@@ -26,6 +26,8 @@ This project is intended to connect to the **existing** Worker named **`glutony`
 
 The repository includes `wrangler.jsonc` with **`name: "glutony"`** and **`main: "worker.mjs"`**. The name must match the existing Worker in Cloudflare; rename the configuration if your actual Worker has a different name.
 
+**GitHub deploy variable preservation:** `wrangler.jsonc` declares the public `DISCORD_APPLICATION_ID` and enables `keep_vars: true` so new GitHub deploys won't remove dashboard-managed plaintext variables. The Bot Token, Public Key and Setup Key remain dashboard-managed secrets—never add their real values to the repository.
+
 **Secrets:** Keep these in **Cloudflare → glutony → Settings → Variables and Secrets**:
 
 | Name | Type | Description |
