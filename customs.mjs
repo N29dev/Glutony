@@ -6,7 +6,7 @@ const RE_ID=/^\d{15,22}$/;
 const HEADERS={'access-control-allow-origin':SITE,'access-control-allow-methods':'GET, POST, DELETE, OPTIONS','access-control-allow-headers':'authorization, content-type','vary':'Origin','cache-control':'no-store'};
 const json=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store',...headers}});
 const siteJson=(body,status=200)=>json(body,status,HEADERS);
-const safe=(v,max=120)=>String(v??'').normalize('NFKC').replace(/[\u0000-\u001f\u007f<>@#*_\x60~|]/g,' ').replace(/\s+/g,' ').trim().slice(0,max);
+const safe=(v,max=120)=>String(v??'').normalize('NFKC').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>@#*_\x60~|\[\]\\]/g,' ').replace(/\s+/g,' ').trim().slice(0,max);
 const actor=i=>({id:String(i.member?.user?.id||i.user?.id||''),name:safe(i.member?.user?.global_name||i.user?.global_name||i.member?.user?.username||i.user?.username||'Player',32)});
 function cleanInvite(raw) {
  let url;try{url=new URL(String(raw??'').trim());}catch{return null;}
@@ -19,6 +19,7 @@ function cleanInvite(raw) {
 function validateForm(form){
  const title=safe(form?.title,64),region=safe(form?.region||'Any region',35),note=safe(form?.note,180);
  const invite=cleanInvite(form?.link);
+ if([form?.title,form?.region,form?.note].some(v=>/(?:https?:\/\/|www\.|discord\.gg\/|roblox\.com\/)/i.test(String(v||''))))return {error:'Links are only allowed in the Roblox invitation field.'};
  if(title.length<4)return {error:'Use a match title of at least 4 characters.'};
  if(!invite)return {error:'Paste a Roblox server share link (https://www.roblox.com/share?code=...&type=Server).'};
  return {title,region,note,...invite};
@@ -167,11 +168,12 @@ const row=components=>({type:1,components});
 const button=(label,id,disabled=false)=>({type:2,style:2,label,custom_id:id,disabled});
 const linkButton=(label,url)=>({type:2,style:5,label,url});
 const msg=components=>({flags:32768,allowed_mentions:{parse:[]},components});
-function browseView(items,page){
+function browseView(items,page,ready=true){
  const total=Math.max(1,Math.ceil(items.length/4)),current=Math.max(0,Math.min(total-1,page));
  const showing=items.slice(current*4,(current+1)*4);
  const parts=[text('## ⚽ Glutony · Customs\n-# Community-hosted private matches · Invites are not verified · Listings expire in 4 hours')];
- if(!showing.length)parts.push(text('No matches yet. Post one and invite other players!'));
+ if(!ready)parts.push(text('Customs is not ready yet: storage is being configured. Please check back soon.'));
+ else if(!showing.length)parts.push(text('No matches yet. Post one and invite other players!'));
  for(let i=0;i<showing.length;i++){
   const o=showing[i];
   parts.push(text('**'+(current*4+i+1)+'. '+safe(o.title,64)+'** · '+safe(o.region,35)+'\n'+safe(o.note||'Looking for teammates',150)+'\n-# Hosted by '+safe(o.owner_name,32)+' · Expires <t:'+Math.floor(o.expires_at/1000)+':R>'));
@@ -180,7 +182,7 @@ function browseView(items,page){
  const partsAll=[{type:17,accent_color:0x32c99a,components:parts}];
  if(showing.length)partsAll.push(row([{type:3,custom_id:'c:select:'+current,placeholder:'Choose a custom match',min_values:1,max_values:1,options:showing.map((o,i)=>({label:(current*4+i+1)+'. '+safe(o.title,55),value:o.id,description:safe(o.region+' · '+o.owner_name,90)}))}]));
  partsAll.push(row([button('◀ Previous','c:browse:'+(current-1),current===0),button('↻ Refresh','c:browse:'+current),button('Next ▶','c:browse:'+(current+1),current+1>=total)]));
- partsAll.push(row([button('＋ Post match','c:add'),linkButton('Website',SITE+'/servers/customs/')]));
+ partsAll.push(row([button('＋ Post match','c:add',!ready),linkButton('Website',SITE+'/servers/customs/')]));
  return msg(partsAll);
 }
 function detailView(item,page){
@@ -211,11 +213,11 @@ async function editMessage(i,data){
 async function discordAsync(i,env,job){
  try{
   if(job.kind==='browse'){
-   await editMessage(i,browseView(await fetchActive(env),job.page));return;
+   await editMessage(i,browseView(await fetchActive(env),job.page,!!env.CUSTOMS_DB));return;
   }
   if(job.kind==='detail'){
    const items=await fetchActive(env),found=items.find(x=>x.id===job.id);
-   await editMessage(i,found?detailView(found,job.page):browseView(items,0));return;
+   await editMessage(i,found?detailView(found,job.page):browseView(items,0,!!env.CUSTOMS_DB));return;
   }
   const a=actor(i);
   let result;
