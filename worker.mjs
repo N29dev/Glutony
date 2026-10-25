@@ -674,4 +674,4 @@ export default {
   },
 };
 
-export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, getServers, attachDetails, locationFromDetail, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, attachDetails, locationFromDetail, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
