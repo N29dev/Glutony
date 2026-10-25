@@ -87,6 +87,11 @@ assert.equal(helpers.config(env, '8v8').placeId,place8);
 assert.equal(helpers.config(env, 'pro').placeId,placePro);
 assert.equal(helpers.config(env, 'main').placeId,placeMain);
 assert.equal(helpers.config(env, 'main').pages,1,'Main always uses one Roblox API page');
+const spread=helpers.sampleSpread(Array.from({length:300},(_,i)=>i),60);
+assert.equal(spread.length,60,'60 globe/list candidates sampled across scanned pages');
+assert.ok(spread[0]<5&&spread.at(-1)>290,'Spread includes first and last page');
+assert.equal(new Set(spread).size,60,'No duplicate sample indices');
+assert.deepEqual(helpers.sampleSpread([1,2,3],24),[1,2,3],'Short lists are unchanged');
 assert.equal(helpers.flagEmoji('BR'),'🇧🇷');
 assert.equal(helpers.normalizedServer({id:server8,playing:16,maxPlayers:16}),null,'Exclude full servers');
 
