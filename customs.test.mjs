@@ -46,4 +46,53 @@ const listing=await customsFetch(new Request('https://glutony.example/api/custom
 assert.deepEqual((await listing.json()).listings,[]);
 const forbidden=await customsFetch(new Request('https://glutony.example/api/customs',{method:'POST',headers:{origin:'https://evil.test', 'content-type':'application/json'},body:'{}'}),{});
 assert.equal(forbidden.status,403);
+
+// Cooldown bypass is checked server-side against a verified Discord user ID.
+// Admins can repost immediately (after removing an active listing), without
+// a 3-per-day quota; regular users still have both restrictions.
+const adminId='123456789012345678';
+const guestId='987654321098765432';
+const testEnv={
+ CUSTOMS_ADMIN_IDS: '  '+adminId+', '+ '112233445566778899' + ' ',
+ CUSTOMS_DB:{
+  prepare(sql){
+   return {
+    bind(...args){
+     return {
+      first:async()=>null, // not banned
+      run:async()=>{
+       testEnv.lastSQL=sql;
+       testEnv.lastArgs=args;
+       return {meta:{changes:1}};
+      }
+     };
+    }
+   };
+  }
+ }
+};
+assert.equal(h.isAdmin(testEnv,adminId),true);
+assert.equal(h.isAdmin(testEnv,guestId),false);
+assert.equal(h.isAdmin({CUSTOMS_MODERATOR_IDS:adminId},adminId),false,
+ 'Moderator permissions alone must not bypass posting anti-spam limits');
+const first=await h.postMatch(testEnv,{id:guestId,name:'Guest'},{
+ title:'Friendly match',link:url,region:'NA'
+});
+assert.equal(first.ok,true);
+assert.equal(testEnv.lastArgs[12],0,'Regular user must not bypass cooldown');
+assert.equal(testEnv.lastArgs[15],0,'Regular user must not bypass daily quota');
+assert.match(testEnv.lastSQL,/\?=1 OR NOT EXISTS/);
+const adminPost=await h.postMatch(testEnv,{id:adminId,name:'Admin'},{
+ title:'Admin practice',link:url,region:'EU'
+});
+assert.equal(adminPost.ok,true);
+assert.equal(testEnv.lastArgs[12],1,'Admin skips cooldown check');
+assert.equal(testEnv.lastArgs[15],1,'Admin skips daily quota');
+assert.ok(testEnv.lastSQL.includes("NOT EXISTS(SELECT 1 FROM customs WHERE owner_id=? AND status='active'"),
+ 'One active listing per account still applies to admins');
+assert.ok(testEnv.lastSQL.includes("NOT EXISTS(SELECT 1 FROM customs WHERE invite_code=?"),
+ 'Duplicate active share links still blocked for admins');
+assert.equal(testEnv.lastArgs.length,20,'All SQL bindings are present');
+console.log('PASS: admin identity allowlist, posting exemption, SQL conditions, and ordinary anti-spam limits.');
+
 console.log('PASS: Customs Roblox URL validation, sanitization, public data, Discord modal, CORS, and disabled-first deployment.');
