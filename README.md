@@ -5,8 +5,8 @@ A Discord **user-installable** slash-command app for browsing **Blue Lock: Rival
 ## Main lobby and interactive globe
 
 - The public BL:R root place `18668065416` is now available as `/api/servers?mode=main` and website tab **Main**, and can be selected through Discord `/blr mode:main` after command re-registration.
-- Main is deliberately limited to **24 joinable servers**, sampled from **one Roblox public-server API page** per refresh. It is **not** a complete list of the game's servers.
-- The website [region globe](https://blr.n29.kz/servers/?mode=main) is draggable/touch-rotatable and zoomable. It plots approximate country centers only for servers with RoValra-resolved country metadata. Click a pin or country to filter the current 24/60-server list. Unknown countries are unplotted, never guessed.
+- Main is deliberately limited to **24 joinable servers**, spread across **one Roblox public-server API page** per refresh. For 8v8/Pro, at most 60 joinable servers are selected evenly from the pages already scanned, improving geographic coverage without more Roblox/RoValra requests. No scan guarantees all possible server regions are represented.
+- The website [region globe](https://blr.n29.kz/servers/?mode=main) groups every distinct RoValra-resolved city/region in the bounded sample under NA, SA, Brazil, Europe, Asia, Oceania, and Africa/Middle East. City pins use approximate city coordinates, falling back to country centers when needed. Select an individual city or an entire continental group to filter the visible server list. Unsupported/unknown locations have no invented markers.
 - Geography outlines are bundled in the website repo with an MIT attribution file, and D3 is loaded on demand from a CDN only when the globe opens. The globe is independent of Customs private-server listings.
 - After deploying this Worker update, **re-register** the Discord `/blr` command to expose the new **Main** choice. Existing registered choices won't change from a Worker deploy alone. The existing `POST /admin/register` route (Bearer `SETUP_KEY`) handles it; do not share or commit the key.
 
