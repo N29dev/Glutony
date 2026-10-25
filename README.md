@@ -2,6 +2,16 @@
 
 A Discord **user-installable** slash-command app for browsing **Blue Lock: Rivals** public servers. Hosted on **Cloudflare Workers** (no always-on bot process needed).
 
+## Community Customs (new)
+
+- Website: [blr.n29.kz/servers/customs/](https://blr.n29.kz/servers/customs/)
+- Discord: `/blr mode:customs` → browse, **Post match** modal, report, remove your own listing
+- Shared Cloudflare D1 storage keeps both interfaces synchronized; listings expire after four hours
+- Spam limits: verified Discord identity, one active post per user, 10-minute cooldown, three posts per day, duplicate-link blocking, reports, optional moderator bans
+- Website posts/reports also require a verified Cloudflare Turnstile token
+
+**Setup is intentionally required** before submissions are enabled. Follow [CUSTOMS_SETUP.md](CUSTOMS_SETUP.md) to create a D1 database, add the production binding to `wrangler.jsonc`, apply migrations, and configure Discord OAuth + Turnstile. Until then the 8v8 and Pro browser continues to work and Customs shows a disabled/pending state. Do not commit Discord OAuth secrets or Turnstile secret.
+
 ## Commands
 
 | Command | Description | Roblox place |
