@@ -507,6 +507,73 @@ async function onInteraction(interaction, env, ctx, origin) {
   return responseCallback(4, {content:'Unsupported command.', flags:64});
 }
 
+// Public, read-only endpoint for https://blr.n29.kz/servers/.
+// Never return Discord credentials or raw anonymous player tokens.
+const SITE_ORIGIN = 'https://blr.n29.kz';
+const websiteHeaders = {
+  'access-control-allow-origin': SITE_ORIGIN,
+  'access-control-allow-methods': 'GET, OPTIONS',
+  'access-control-allow-headers': 'content-type',
+  'vary': 'Origin',
+  'cache-control': 'public, max-age=20, stale-while-revalidate=30',
+  'x-content-type-options': 'nosniff',
+};
+function siteJson(data, status = 200) {
+  return new Response(JSON.stringify(data), {status, headers:{...websiteHeaders, 'content-type':'application/json; charset=utf-8'}});
+}
+async function websiteServers(request, env) {
+  const url = new URL(request.url);
+  const mode = url.searchParams.get('mode') || '8v8';
+  if (!MODES[mode]) return siteJson({error:'Unknown mode; choose 8v8 or pro.'}, 400);
+  try {
+    const result = await getServers(env, mode, false);
+    // Fetch regional details in a single RoValra batch. Cap it for rate limits.
+    const entries = result.servers.slice(0, 60);
+    for (let i=0; i<Math.min(entries.length, 60); i+=20) {
+      await attachDetails(result, entries.slice(i, i+20), env);
+    }
+    const servers = entries.map(s => ({
+      id: s.id, playing: s.playing, maxPlayers: s.maxPlayers,
+      free: s.free, ping: s.ping, region: s.region || null,
+      city: s.details?.city || null, state: s.details?.region || null,
+      country: s.details?.country || null,
+      countryCode: countryCode(s.details?.country),
+      version: s.details?.version ?? null,
+      firstSeen: s.details?.firstSeen ?? null,
+      // Join links lead to a click-to-launch page, not broken Roblox web matchmaking.
+      joinPc: joinLinks(result.placeId, s.id, url.origin).pc,
+      joinMobile: joinLinks(result.placeId, s.id, url.origin).mobile,
+    }));
+    return siteJson({
+      mode, placeId: result.placeId, servers, count: servers.length,
+      scanned: result.scanned, hasMore: result.hasMore || result.servers.length > entries.length,
+      updatedAt: new Date(result.at).toISOString(),
+      disclaimer: 'Locations and versions are provided by RoValra where available. Roblox may ignore target instance IDs.'
+    });
+  } catch (error) {
+    console.error('Website server API failed:', error);
+    return siteJson({error:'Server list unavailable. Try refreshing shortly.'}, 503);
+  }
+}
+async function websiteHeadshots(request, env) {
+  const url = new URL(request.url);
+  const mode = url.searchParams.get('mode') || '8v8';
+  const jobId = url.searchParams.get('id') || '';
+  if (!MODES[mode] || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(jobId)) {
+    return siteJson({error:'Invalid mode or server ID.'}, 400);
+  }
+  try {
+    const result = await getServers(env, mode, false);
+    const server = result.servers.find(s => s.id.toLowerCase() === jobId.toLowerCase());
+    if (!server) return siteJson({error:'Server is no longer listed.'}, 404);
+    const headshots = await getPlayerHeadshots(server);
+    return siteJson({images:headshots, playing:server.playing});
+  } catch (error) {
+    console.warn('Public avatar lookup failed:', String(error));
+    return siteJson({images:[]});
+  }
+}
+
 async function registerCommand(request, env) {
   if (!env.SETUP_KEY || env.SETUP_KEY.length < 20 || !equalSecret(request.headers.get('authorization'), `Bearer ${env.SETUP_KEY}`)) {
     return json({ error: 'Not authorized. Provide an Authorization: Bearer header with your long SETUP_KEY.' }, 403);
@@ -531,6 +598,11 @@ export default {
     if (request.method === 'GET' && pathname === '/') {
       return json({ bot: 'Glutony', status: 'online', mode: 'Cloudflare Workers', interaction_endpoint: '/interactions' });
     }
+    if (request.method === 'OPTIONS' && pathname.startsWith('/api/servers')) {
+      return new Response(null, {status:204,headers:websiteHeaders});
+    }
+    if (request.method === 'GET' && pathname === '/api/servers') return websiteServers(request, env);
+    if (request.method === 'GET' && pathname === '/api/servers/avatars') return websiteHeadshots(request, env);
     if (request.method === 'GET' && pathname === '/join') return joinLanding(request, env);
     if (request.method === 'POST' && pathname === '/admin/register') return registerCommand(request, env);
     if (request.method !== 'POST' || pathname !== '/interactions') return json({ error: 'Not found' }, 404);
