@@ -238,7 +238,10 @@ async function attachDetails(result, servers, env) {
     for (const server of missing) {
       const details = found.get(server.id) || null;
       applyDetail(server, details);
-      detailCache.set(`${result.placeId}:${server.id}`, {details, expiry: now + (details ? 180_000 : 40_000)});
+      // Server metadata may arrive before RoValra learns its location. Retry missing
+      // regions sooner, even when version and first_seen are already present.
+      const lifetime = details?.location ? 180_000 : 45_000;
+      detailCache.set(`${result.placeId}:${server.id}`, {details, expiry: now + lifetime});
     }
   } catch (err) {
     console.warn('Optional RoValra details failed:', String(err?.message || err));
@@ -555,6 +558,45 @@ async function websiteServers(request, env) {
     return siteJson({error:'Server list unavailable. Try refreshing shortly.'}, 503);
   }
 }
+// Website background lookup: only recheck up to 8 still-active servers.
+// Frontend schedules this every ~75s while visible; positive locations cached 3 min.
+// No user/session credentials or player tokens are returned.
+async function websiteRegions(request, env) {
+  const url = new URL(request.url);
+  const mode = url.searchParams.get('mode') || '8v8';
+  if (!MODES[mode]) return siteJson({error:'Unknown mode.'}, 400);
+  const rawIds = (url.searchParams.get('ids') || '').split(',').filter(Boolean);
+  if (!rawIds.length || rawIds.length > 8 ||
+      rawIds.some(id => !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))) {
+    return siteJson({error:'Provide 1–8 valid server IDs.'}, 400);
+  }
+  try {
+    const result = await getServers(env, mode, false);
+    const selected = [...new Set(rawIds.map(id => id.toLowerCase()))]
+      .map(id => result.servers.find(server => server.id.toLowerCase() === id))
+      .filter(Boolean);
+    if (!selected.length) return siteJson({regions:{}, checkedAt:new Date().toISOString()});
+    await attachDetails(result, selected, env);
+    const regions = {};
+    for (const server of selected) {
+      const d = server.details;
+      regions[server.id] = {
+        region: server.region || null,
+        city: d?.city || null,
+        state: d?.region || null,
+        country: d?.country || null,
+        countryCode: countryCode(d?.country),
+        version: d?.version ?? null,
+        firstSeen: d?.firstSeen ?? null,
+      };
+    }
+    return siteJson({regions, checkedAt:new Date().toISOString()});
+  } catch (error) {
+    console.warn('Passive region refresh failed:', String(error?.message || error));
+    return siteJson({error:'Region lookup unavailable.'},503);
+  }
+}
+
 async function websiteHeadshots(request, env) {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode') || '8v8';
@@ -602,6 +644,7 @@ export default {
       return new Response(null, {status:204,headers:websiteHeaders});
     }
     if (request.method === 'GET' && pathname === '/api/servers') return websiteServers(request, env);
+    if (request.method === 'GET' && pathname === '/api/servers/regions') return websiteRegions(request, env);
     if (request.method === 'GET' && pathname === '/api/servers/avatars') return websiteHeadshots(request, env);
     if (request.method === 'GET' && pathname === '/join') return joinLanding(request, env);
     if (request.method === 'POST' && pathname === '/admin/register') return registerCommand(request, env);
