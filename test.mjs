@@ -106,6 +106,23 @@ assert.ok(contains(edited,'Join Mobile'));
 assert.ok(contains(edited,placePro));
 assert.ok(contains(edited,'🇫🇷'));
 
+// Discord buttons must link through our HTTPS landing page, not Roblox's broken website matchmaking route.
+const proJoin = helpers.joinLinks(placePro, serverPro, 'https://glutony.example');
+assert.equal(new URL(proJoin.pc).pathname,'/join');
+assert.equal(new URL(proJoin.pc).searchParams.get('gameInstanceId'),serverPro);
+assert.equal(new URL(proJoin.mobile).searchParams.get('device'),'mobile');
+assert.ok(proJoin.direct.startsWith('roblox://experiences/start?'));
+assert.equal(new URL(proJoin.fallbackMobile).searchParams.get('deep_link_value'),proJoin.direct);
+const joinPage = await worker.fetch(new Request(proJoin.pc),env,{});
+assert.equal(joinPage.status,200);
+assert.match(joinPage.headers.get('content-type'),/text\/html/);
+const joinHtml = await joinPage.text();
+assert.ok(joinHtml.includes(serverPro));
+assert.ok(joinHtml.includes(proJoin.direct.replaceAll('&','&')),'Landing page includes direct app protocol');
+assert.ok(!joinHtml.includes('Join randomly'));
+const invalidJoin = await worker.fetch(new Request('https://glutony.example/join?placeId='+placePro+'&gameInstanceId=invalid'),env,{});
+assert.equal(invalidJoin.status,400);
+
 response = await invoke({type:3,application_id:env.DISCORD_APPLICATION_ID,token:'pro-back',data:{custom_id:'g:b:pro:0:players'}});
 assert.equal(response.type,6);
 assert.ok(contains(lastEdit(),'BL:R Pro Servers'));
