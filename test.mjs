@@ -80,7 +80,7 @@ assert.equal(helpers.normalizedServer({id:server8,playing:16,maxPlayers:16}),nul
 
 let response = await invoke({type:2, application_id:env.DISCORD_APPLICATION_ID, token:'8v8', data:{name:'blr',options:[{name:'mode',value:'8v8'}]}});
 assert.equal(response.type,5,'Must acknowledge quickly');
-assert.equal(response.data.flags,64,'Ephemeral response');
+assert.equal(response.data,undefined,'Public deferred response must not set the ephemeral flag');
 let edited = lastEdit();
 assert.equal(edited.flags,32768,'Components V2');
 assert.ok(contains(edited,'12/16'));
