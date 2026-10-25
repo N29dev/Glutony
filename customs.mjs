@@ -117,7 +117,7 @@ async function callbackOAuth(req,env){
  const who=await r.json();
  if(!RE_ID.test(String(who.id)))return new Response('Invalid account.',{status:400});
  const token=await tokenFor(env,{id:String(who.id),name:who.global_name||who.username});
- return new Response(null,{status:302,headers:{location:SITE+'/servers/?mode=customs#customs_session='+encodeURIComponent(token),'cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':'glutony_oauth=; Path=/auth/discord; Max-Age=0; HttpOnly; Secure; SameSite=Lax'}});
+ return new Response(null,{status:302,headers:{location:SITE+'/servers/customs/#customs_session='+encodeURIComponent(token),'cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':'glutony_oauth=; Path=/auth/discord; Max-Age=0; HttpOnly; Secure; SameSite=Lax'}});
 }
 async function checkTurnstile(env,token){
  if(!env.CUSTOMS_TURNSTILE_SECRET||typeof token!=='string'||!token||token.length>2048)return false;
@@ -180,7 +180,7 @@ function browseView(items,page){
  const partsAll=[{type:17,accent_color:0x32c99a,components:parts}];
  if(showing.length)partsAll.push(row([{type:3,custom_id:'c:select:'+current,placeholder:'Choose a custom match',min_values:1,max_values:1,options:showing.map((o,i)=>({label:(current*4+i+1)+'. '+safe(o.title,55),value:o.id,description:safe(o.region+' · '+o.owner_name,90)}))}]));
  partsAll.push(row([button('◀ Previous','c:browse:'+(current-1),current===0),button('↻ Refresh','c:browse:'+current),button('Next ▶','c:browse:'+(current+1),current+1>=total)]));
- partsAll.push(row([button('＋ Post match','c:add'),linkButton('Website',SITE+'/servers/?mode=customs')]));
+ partsAll.push(row([button('＋ Post match','c:add'),linkButton('Website',SITE+'/servers/customs/')]));
  return msg(partsAll);
 }
 function detailView(item,page){
