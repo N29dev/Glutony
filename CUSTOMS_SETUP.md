@@ -65,6 +65,26 @@ Cloudflare docs: https://developers.cloudflare.com/turnstile/get-started/ . The 
 
 Optional: `CUSTOMS_MODERATOR_IDS` (Text) — comma-separated trusted Discord user IDs that may remove abusive listings via Discord.
 
+## Player counts and real server regions (October 2026)
+
+Glutony now supports **optional host-reported player counts**. They are visible on the website and in the Discord Customs list/detail view; hosts can edit the number once every 60 seconds after logging in with Discord. A new listing may be created without a player count (displayed as Unknown). Existing listings continue working with unknown counts.
+
+**One-time schema upgrade:** In the Glutony repository run:
+
+```bash
+npm install
+npx wrangler login
+npx wrangler d1 migrations apply glutony-customs --remote
+```
+
+This applies the new `migrations/0002_customs_player_counts.sql` to the **existing** D1 database; no new database, secrets, or Discord command registration is needed. Run it once, then verify `/api/customs` still returns listings. Without this migration, posts without counts still work, but count-bearing submissions and updates return an error instead of silently losing data.
+
+**IMPORTANT — reporting limits:** A Roblox `/share?code=...&type=Server` invitation does not publicly expose the current active `JobId` or its datacenter/occupancy. Roblox's public server-list API does **not** reliably enumerate private instances. Thus Glutony does **not** claim these are verified/live player counts or physical server regions.
+
+- `playerCurrent/playerCapacity/playerReportedAt` = optional **host-reported**, manually refreshed occupancy; shown with freshness.
+- `region` = **host-selected** (the host's intended area), **not** a confirmed Roblox server/datacenter location.
+- A future truly live integration would require supported, authorized game-side telemetry from BL:R or another verified external data source. Never request or store anyone's Roblox `.ROBLOSECURITY` cookie.
+
 ## Admin cooldown exemption
 
 To grant your Discord account admin privileges in **both** Glutony's website and Discord app, add this **Cloudflare Worker runtime variable**:
