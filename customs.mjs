@@ -120,12 +120,35 @@ async function callbackOAuth(req,env){
  const token=await tokenFor(env,{id:String(who.id),name:who.global_name||who.username});
  return new Response(null,{status:302,headers:{location:SITE+'/servers/customs/#customs_session='+encodeURIComponent(token),'cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':'glutony_oauth=; Path=/auth/discord; Max-Age=0; HttpOnly; Secure; SameSite=Lax'}});
 }
-async function checkTurnstile(env,token){
- if(!env.CUSTOMS_TURNSTILE_SECRET||typeof token!=='string'||!token||token.length>2048)return false;
- const response=await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({secret:env.CUSTOMS_TURNSTILE_SECRET,response:token}),signal:AbortSignal.timeout(5000)});
- if(!response.ok)return false;
- const result=await response.json();
- return result.success===true&&(!result.hostname||result.hostname==='blr.n29.kz');
+// Turnstile Spin existing-widget contract: verify every token against this
+// production hostname AND a form-specific action. Fail closed on all errors.
+// CUSTOMS_TURNSTILE_SECRET remains exclusively in Cloudflare runtime secrets.
+async function checkTurnstile(env,token,expectedAction,clientIP=''){
+ if(!env.CUSTOMS_TURNSTILE_SECRET || typeof token!=='string' ||
+    token.length===0 || token.length>2048 ||
+    !['customs_post','customs_report'].includes(expectedAction))return false;
+ try {
+  const params=new URLSearchParams({secret:env.CUSTOMS_TURNSTILE_SECRET,response:token});
+  if(clientIP)params.set('remoteip',clientIP);
+  const response=await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify',{
+   method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},
+   body:params,signal:AbortSignal.timeout(10000)
+  });
+  if(!response.ok)return false;
+  const result=await response.json();
+  const verified=result?.success===true &&
+    result.hostname==='blr.n29.kz' &&
+    result.action===expectedAction;
+  if(!verified)console.warn('Customs Turnstile verification rejected:',{
+   actionMatched:result?.action===expectedAction,
+   hostnameMatched:result?.hostname==='blr.n29.kz',
+   errors:Array.isArray(result?.['error-codes'])?result['error-codes'].slice(0,5):[],
+  });
+  return verified;
+ } catch(error) {
+  console.warn('Customs Turnstile Siteverify unavailable:',error?.name||'Unknown');
+  return false;
+ }
 }
 async function website(req,env){
  const u=new URL(req.url),p=u.pathname;
@@ -148,7 +171,7 @@ async function website(req,env){
  if(p==='/api/customs'&&req.method==='POST'){
   if(!env.CUSTOMS_DB||!env.CUSTOMS_TURNSTILE_SECRET||!env.CUSTOMS_TURNSTILE_SITEKEY)return siteJson({error:'Posting not configured yet.'},503);
   let body;try{body=await req.json();}catch{return siteJson({error:'Invalid JSON.'},400);}
-  if(!await checkTurnstile(env,body.turnstile))return siteJson({error:'Anti-spam check failed. Please try again.'},403);
+  if(!await checkTurnstile(env,body.turnstile,'customs_post',req.headers.get('CF-Connecting-IP')||''))return siteJson({error:'Anti-spam verification was rejected or expired. Retry the challenge.',status:'rejected'},403);
   const result=await postMatch(env,user,body);
   return siteJson(result,result.status||201);
  }
@@ -158,7 +181,7 @@ async function website(req,env){
  if(req.method==='DELETE'&&!match[2])result=await deleteMatch(env,user,match[1]);
  else if(req.method==='POST'&&match[2]){
   let body;try{body=await req.json();}catch{return siteJson({error:'Invalid JSON.'},400);}
-  if(!await checkTurnstile(env,body.turnstile))return siteJson({error:'Anti-spam check failed.'},403);
+  if(!await checkTurnstile(env,body.turnstile,'customs_report',req.headers.get('CF-Connecting-IP')||''))return siteJson({error:'Anti-spam verification was rejected or expired. Retry the challenge.',status:'rejected'},403);
   result=await reportMatch(env,user,match[1]);
  }else return siteJson({error:'Not found.'},404);
  return siteJson(result,result.status||200);
