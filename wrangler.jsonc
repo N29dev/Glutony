@@ -10,5 +10,13 @@
   "keep_vars": true,
   "vars": {
     "DISCORD_APPLICATION_ID": "1563907646757666926"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "CUSTOMS_DB",
+      "database_name": "glutony-customs",
+      "database_id": "6cebae3f-98f3-4f44-befd-e24744a98bbd",
+      "migrations_dir": "migrations"
+    }
+  ]
 }
