@@ -88,6 +88,14 @@ npm run dev
 
 To deploy manually with a Cloudflare-authenticated local account: `npm run deploy`.
 
+## Message visibility
+
+`/blr mode:8v8` and `/blr mode:pro` publish **non-ephemeral** Discord messages, visible to other participants in the channel/DM. To get the new behavior, run a **new** slash command after the updated Worker deploys; older ephemeral messages cannot be converted to public ones.
+
+Discord servers can restrict public responses from user-installed apps with the **Use External Apps** permission (Server Settings → Roles → Apps Permissions). In that case the command may still appear privately. The server can alternatively install Glutony as a server app.
+
+**Shared components:** Server selection, Refresh, Previous, Next, and Back update the **same public message**. This means one person's clicks change the view for everyone. For individual browsing use a fresh command or add per-user ephemeral details in a future update.
+
 ## Data and limitations
 
 - **Public game servers:** Roblox `games.roblox.com`, sampled over a limited number of pages. Server population can change between browsing and joining.
