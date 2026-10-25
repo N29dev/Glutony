@@ -65,6 +65,28 @@ Cloudflare docs: https://developers.cloudflare.com/turnstile/get-started/ . The 
 
 Optional: `CUSTOMS_MODERATOR_IDS` (Text) — comma-separated trusted Discord user IDs that may remove abusive listings via Discord.
 
+## Admin cooldown exemption
+
+To grant your Discord account admin privileges in **both** Glutony's website and Discord app, add this **Cloudflare Worker runtime variable**:
+
+- Name: `CUSTOMS_ADMIN_IDS`
+- Type: **Text** (Discord user IDs are not secrets)
+- Value: your personal Discord **User ID**, e.g. `123456789012345678` (example only)
+
+To find your ID, enable **Discord User Settings → Advanced → Developer Mode**, then right-click your own profile and choose **Copy User ID**. Multiple administrators can be configured with comma-separated IDs. **Use user IDs, not the bot's application ID or Discord usernames.**
+
+The Worker grants exemptions only after identity verification (Discord interaction signature or signed website OAuth session). No client-supplied `admin=true` parameter or username is trusted.
+
+Admin exemptions:
+- No 10-minute cooldown after removing/expiring an old listing.
+- No 3-posts-per-day quota.
+- Can remove abusive listings, just like `CUSTOMS_MODERATOR_IDS`.
+- **Still limited to one active listing**, can't reuse an active share code, and must provide a valid Roblox invite. Website Turnstile, bans, and reports remain enforced.
+
+Regular players and accounts in `CUSTOMS_MODERATOR_IDS` alone keep the normal posting limits. This is a separate admin privilege.
+
+The Cloudflare dashboard variable persists with `keep_vars: true` in `wrangler.jsonc`. After adding it, check `/api/customs/me` while signed in: the JSON should include `"isAdmin":true` for your account. You do not need to re-register the `/blr` Discord command.
+
 ## 4. Verify
 
 After the newest commits deploy on both repositories:
