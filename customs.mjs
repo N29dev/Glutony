@@ -7,7 +7,7 @@ const RE_ID=/^\d{15,22}$/;
 // client-submitted flags, display names, or guild permission claims.
 const adminIds=env=>new Set(String(env.CUSTOMS_ADMIN_IDS||'').split(/[,\s]+/).filter(v=>RE_ID.test(v)));
 const isAdmin=(env,id)=>RE_ID.test(String(id))&&adminIds(env).has(String(id));
-const HEADERS={'access-control-allow-origin':SITE,'access-control-allow-methods':'GET, POST, DELETE, OPTIONS','access-control-allow-headers':'authorization, content-type','vary':'Origin','cache-control':'no-store'};
+const HEADERS={'access-control-allow-origin':SITE,'access-control-allow-methods':'GET, POST, PATCH, DELETE, OPTIONS','access-control-allow-headers':'authorization, content-type','vary':'Origin','cache-control':'no-store'};
 const json=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store',...headers}});
 const siteJson=(body,status=200)=>json(body,status,HEADERS);
 const safe=(v,max=120)=>String(v??'').normalize('NFKC').replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>@#*_\x60~|\[\]\\]/g,' ').replace(/\s+/g,' ').trim().slice(0,max);
@@ -20,16 +20,39 @@ function cleanInvite(raw) {
  if(!/^[a-zA-Z0-9_-]{16,80}$/.test(code))return null;
  return {code,url:'https://www.roblox.com/share?code='+encodeURIComponent(code)+'&type=Server'};
 }
+// Optional host-reported occupancy. This must never be labeled as live Roblox data.
+function parsePlayers(form){
+ let current=form?.currentPlayers??form?.playerCurrent;
+ let capacity=form?.capacity??form?.playerCapacity;
+ const text=String(form?.players??'').trim();
+ if(text){
+  const match=/^(\d{1,3})\s*\/\s*(\d{1,3})$/.exec(text);
+  if(!match)return {error:'Players must look like 4/10.'};
+  current=match[1];capacity=match[2];
+ }
+ if((current===undefined||current===null||String(current).trim()==='') &&
+    (capacity===undefined||capacity===null||String(capacity).trim()===''))return {current:null,capacity:null};
+ if(current===undefined||capacity===undefined || current===null||capacity===null ||
+    !/^\d{1,3}$/.test(String(current)) || !/^\d{1,3}$/.test(String(capacity)))return {error:'Enter both current and maximum players (example: 4/10).'};
+ const c=Number(current),m=Number(capacity);
+ if(c<0||m<1||m>100||c>m)return {error:'Player count must be between 0 and capacity; capacity must be 1–100.'};
+ return {current:c,capacity:m};
+}
 function validateForm(form){
  const title=safe(form?.title,64),region=safe(form?.region||'Any region',35),note=safe(form?.note,180);
  const invite=cleanInvite(form?.link);
  if([form?.title,form?.region,form?.note].some(v=>/(?:https?:\/\/|www\.|discord\.gg\/|roblox\.com\/)/i.test(String(v||''))))return {error:'Links are only allowed in the Roblox invitation field.'};
  if(title.length<4)return {error:'Use a match title of at least 4 characters.'};
  if(!invite)return {error:'Paste a Roblox server share link (https://www.roblox.com/share?code=...&type=Server).'};
- return {title,region,note,...invite};
+ const players=parsePlayers(form);
+ if(players.error)return {error:players.error};
+ return {title,region,note,...invite,players};
 }
 function publicEntry(r){
- return {id:r.id,title:r.title,region:r.region,note:r.note,ownerName:r.owner_name,link:r.invite_url,createdAt:r.created_at,expiresAt:r.expires_at};
+ return {id:r.id,title:r.title,region:r.region,note:r.note,ownerName:r.owner_name,link:r.invite_url,createdAt:r.created_at,expiresAt:r.expires_at,
+ playerCurrent:Number.isInteger(r.player_current)?r.player_current:null,
+ playerCapacity:Number.isInteger(r.player_capacity)?r.player_capacity:null,
+ playerReportedAt:Number.isInteger(r.player_reported_at)?r.player_reported_at:null};
 }
 async function fetchActive(env){
  if(!env.CUSTOMS_DB)return [];
@@ -48,20 +71,54 @@ async function postMatch(env,user,form){
  // and are not subject to the 3-per-day quota. All other safety checks remain:
  // one active listing, duplicate invite check, ban list, validated Roblox URL.
  // Keep each condition inside one INSERT to avoid concurrent submission races.
- const query="INSERT INTO customs(id,owner_id,owner_name,title,region,note,invite_url,invite_code,created_at,expires_at,status) "+
- "SELECT ?,?,?,?,?,?,?,?,?,?,'active' WHERE "+
+ // Keep no-count posts compatible with the old schema until migration 0002 runs.
+ const counted=d.players.current!==null;
+ const columns=counted?',player_current,player_capacity,player_reported_at':'';
+ const values=counted?',?,?,?':'';
+ const query="INSERT INTO customs(id,owner_id,owner_name,title,region,note,invite_url,invite_code,created_at,expires_at,status"+columns+") "+
+ "SELECT ?,?,?,?,?,?,?,?,?,?,'active'"+values+" WHERE "+
  "NOT EXISTS(SELECT 1 FROM customs WHERE owner_id=? AND status='active' AND expires_at>?) AND "+
  "(?=1 OR NOT EXISTS(SELECT 1 FROM customs WHERE owner_id=? AND created_at>?)) AND "+
  "(?=1 OR (SELECT COUNT(*) FROM customs WHERE owner_id=? AND created_at>?) < 3) AND "+
  "NOT EXISTS(SELECT 1 FROM customs WHERE invite_code=? AND status='active' AND expires_at>?)";
- const result=await env.CUSTOMS_DB.prepare(query).bind(
+ const params=[
   id,user.id,safe(user.name,32),d.title,d.region,d.note,d.url,d.code,now,expires,
+  ...(counted?[d.players.current,d.players.capacity,now]:[]),
   user.id,now,admin?1:0,user.id,now-600000,admin?1:0,user.id,now-86400000,d.code,now
- ).run();
- return result.meta?.changes?{ok:true,item:{id,title:d.title,region:d.region,note:d.note,ownerName:user.name,link:d.url,createdAt:now,expiresAt:expires}}:
+ ];
+ let result;
+ try{result=await env.CUSTOMS_DB.prepare(query).bind(...params).run();}
+ catch(error){
+  if(counted&&/no such column|has no column|table .* has no column/i.test(String(error?.message||error)))
+   return {status:503,error:'Player counts are not enabled in the database yet. Apply the latest D1 migration.'};
+  throw error;
+ }
+ return result.meta?.changes?{ok:true,item:{
+  id,title:d.title,region:d.region,note:d.note,ownerName:user.name,link:d.url,createdAt:now,expiresAt:expires,
+  playerCurrent:d.players.current,playerCapacity:d.players.capacity,playerReportedAt:counted?now:null
+ }}:
  {status:429,error:admin?
   'You already have an active listing or this invite is already listed. Remove the old listing to repost.':
   'Limit: 1 active post, 10-minute cooldown, 3 posts per day, and no duplicate active links.'};
+}
+// OAuth or signed Discord actor only. Host can refresh self-reported count once/min.
+async function updatePlayers(env,user,id,form){
+ if(!env.CUSTOMS_DB)return {status:503,error:'Database unavailable.'};
+ if(!RE_ID.test(user.id)||!RE_UUID.test(id))return {status:400,error:'Invalid request.'};
+ const p=parsePlayers(form);
+ if(p.error)return {status:400,error:p.error};
+ const now=Date.now();
+ const sql="UPDATE customs SET player_current=?,player_capacity=?,player_reported_at=? "+
+ "WHERE id=? AND owner_id=? AND status='active' AND expires_at>? "+
+ "AND (player_reported_at IS NULL OR player_reported_at<=?)";
+ try {
+  const out=await env.CUSTOMS_DB.prepare(sql).bind(p.current,p.capacity,p.current===null?null:now,id,user.id,now,now-60_000).run();
+  return out.meta?.changes?{ok:true,playerCurrent:p.current,playerCapacity:p.capacity,playerReportedAt:p.current===null?null:now}:
+   {status:429,error:'Only the listing owner can update its player count, at most once per minute.'};
+ }catch(error){
+  if(/no such column/i.test(String(error?.message||error)))return {status:503,error:'Apply Customs D1 migration 0002 to enable player counts.'};
+  throw error;
+ }
 }
 async function deleteMatch(env,user,id){
  if(!env.CUSTOMS_DB)return {status:503,error:'Database unavailable.'};
@@ -180,7 +237,7 @@ async function website(req,env){
   const rows=await env.CUSTOMS_DB.prepare("SELECT id FROM customs WHERE owner_id=? AND status='active' AND expires_at>?").bind(user.id,Date.now()).all();
   return siteJson({ids:(rows.results||[]).map(x=>x.id)});
  }
- if(!['POST','DELETE'].includes(req.method))return siteJson({error:'Not found.'},404);
+ if(!['POST','DELETE','PATCH'].includes(req.method))return siteJson({error:'Not found.'},404);
  if(req.headers.get('origin')!==SITE)return siteJson({error:'Invalid request origin.'},403);
  if(!user)return siteJson({error:'Sign in with Discord.'},401);
  if(p==='/api/customs'&&req.method==='POST'){
@@ -189,6 +246,13 @@ async function website(req,env){
   if(!await checkTurnstile(env,body.turnstile,'customs_post',req.headers.get('CF-Connecting-IP')||''))return siteJson({error:'Anti-spam verification was rejected or expired. Retry the challenge.',status:'rejected'},403);
   const result=await postMatch(env,user,body);
   return siteJson(result,result.status||201);
+ }
+ const playerMatch=/^\/api\/customs\/([a-f0-9-]{36})\/players$/i.exec(p);
+ if(playerMatch&&req.method==='PATCH'){
+  let body;try{body=await req.json();}catch{return siteJson({error:'Invalid JSON.'},400);}
+  // Signed OAuth bearer token + same-origin request + SQL update throttling.
+  const result=await updatePlayers(env,user,playerMatch[1],body);
+  return siteJson(result,result.status||200);
  }
  const match=/^\/api\/customs\/([a-f0-9-]{36})(\/report)?$/i.exec(p);
  if(!match)return siteJson({error:'Not found.'},404);
@@ -209,12 +273,16 @@ const msg=components=>({flags:32768,allowed_mentions:{parse:[]},components});
 function browseView(items,page,ready=true){
  const total=Math.max(1,Math.ceil(items.length/4)),current=Math.max(0,Math.min(total-1,page));
  const showing=items.slice(current*4,(current+1)*4);
- const parts=[text('## ⚽ Glutony · Customs\n-# Community-hosted private matches · Invites are not verified · Listings expire in 4 hours')];
+ const parts=[text('## ⚽ Glutony · Customs\n-# Community-hosted private matches · Invites and region are unverified · Listings expire in 4 hours')];
  if(!ready)parts.push(text('Customs is not ready yet: storage is being configured. Please check back soon.'));
  else if(!showing.length)parts.push(text('No matches yet. Post one and invite other players!'));
  for(let i=0;i<showing.length;i++){
   const o=showing[i];
-  parts.push(text('**'+(current*4+i+1)+'. '+safe(o.title,64)+'** · '+safe(o.region,35)+'\n'+safe(o.note||'Looking for teammates',150)+'\n-# Hosted by '+safe(o.owner_name,32)+' · Expires <t:'+Math.floor(o.expires_at/1000)+':R>'));
+  const shown=publicEntry(o);
+  const count=shown.playerCurrent!==null&&shown.playerCapacity!==null
+    ?' · '+shown.playerCurrent+'/'+shown.playerCapacity+' players (host reported)'
+    :' · Players unknown';
+  parts.push(text('**'+(current*4+i+1)+'. '+safe(o.title,64)+'** · Host region: '+safe(o.region,35)+count+'\n'+safe(o.note||'Looking for teammates',150)+'\n-# Hosted by '+safe(o.owner_name,32)+' · Expires <t:'+Math.floor(o.expires_at/1000)+':R>'));
  }
  parts.push(text('-# Only public Roblox server invite links are accepted. Do not share account details.'));
  const partsAll=[{type:17,accent_color:0x32c99a,components:parts}];
@@ -226,12 +294,14 @@ function browseView(items,page,ready=true){
 function detailView(item,page){
  return msg([
   {type:17,accent_color:0x32c99a,components:[
-   text('## ⚽ '+safe(item.title,64)+'\n-# Community-hosted private match · '+safe(item.region,35)),
-   text('**Host:** '+safe(item.owner_name,32)+'\n**Note:** '+safe(item.note||'Looking for teammates',180)+'\n**Expires:** <t:'+Math.floor(item.expires_at/1000)+':R>'),
+   text('## ⚽ '+safe(item.title,64)+'\n-# Community-hosted private match · Host-selected region: '+safe(item.region,35)),
+   text('**Players:** '+(item.player_current!==null&&Number.isInteger(item.player_current)&&Number.isInteger(item.player_capacity)?
+    item.player_current+'/'+item.player_capacity+' (host reported, not live)':'Unknown')+
+    '\n**Host:** '+safe(item.owner_name,32)+'\n**Note:** '+safe(item.note||'Looking for teammates',180)+'\n**Expires:** <t:'+Math.floor(item.expires_at/1000)+':R>'),
    text('-# This invite was submitted by another player; Glutony cannot verify that it belongs to BL:R.')
   ]},
   row([linkButton('Open Roblox invite',item.invite_url)]),
-  row([button('◀ Back','c:browse:'+page),button('Report','c:report:'+item.id),button('Remove my listing','c:remove:'+item.id)])
+  row([button('◀ Back','c:browse:'+page),button('Update players','c:players:'+item.id),button('Report','c:report:'+item.id),button('Remove my listing','c:remove:'+item.id)])
  ]);
 }
 function createModal(){
@@ -240,7 +310,14 @@ function createModal(){
   field('title','Match title',1,true,64),
   field('link','Roblox private server share URL',1,true,220),
   field('region','Region (NA / EU / Asia / etc.)',1,false,35),
-  field('note','Rules / players needed (optional)',2,false,180)
+  field('note','Rules / players needed (optional)',2,false,180),
+  field('players','Players (optional, e.g. 4/10)',1,false,7)
+ ]}};
+}
+function updatePlayersModal(id){
+ return {type:9,data:{custom_id:'c:players-modal:'+id,title:'Update player count',components:[
+  {type:18,label:'Current players (0–100)',component:{type:4,custom_id:'currentPlayers',style:1,required:true,min_length:1,max_length:3}},
+  {type:18,label:'Maximum players (1–100)',component:{type:4,custom_id:'capacity',style:1,required:true,min_length:1,max_length:3}},
  ]}};
 }
 function callback(type,data){return json(data===undefined?{type}:{type,data});}
@@ -262,7 +339,8 @@ async function discordAsync(i,env,job){
   if(job.kind==='create')result=await postMatch(env,a,job.form);
   else if(job.kind==='remove')result=await deleteMatch(env,a,job.id);
   else if(job.kind==='report')result=await reportMatch(env,a,job.id);
-  const success=job.kind==='create'?'✅ Your match is posted. Open Customs to see it.':job.kind==='remove'?'✅ Listing removed.':'✅ Report received.';
+  else if(job.kind==='players')result=await updatePlayers(env,a,job.id,job.form);
+  const success=job.kind==='create'?'✅ Your match is posted. Open Customs to see it.':job.kind==='remove'?'✅ Listing removed.':job.kind==='players'?'✅ Player count updated (host-reported).':'✅ Report received.';
   await editMessage(i,{content:result.error?'⚠️ '+result.error:success,allowed_mentions:{parse:[]}});
  }catch(error){
   console.error('Discord Customs failed',error);
@@ -283,10 +361,17 @@ export function customsInteraction(i,env,ctx){
   ctx.waitUntil(discordAsync(i,env,{kind:'create',form:modalValues(i)}));
   return callback(5,{flags:64});
  }
+ const playersModal=/^c:players-modal:([a-f0-9-]{36})$/i.exec(i.data?.custom_id||'');
+ if(i.type===5&&playersModal&&RE_UUID.test(playersModal[1])){
+  ctx.waitUntil(discordAsync(i,env,{kind:'players',id:playersModal[1],form:modalValues(i)}));
+  return callback(5,{flags:64});
+ }
  if(i.type!==3)return null;
  const id=i.data?.custom_id||'';
  if(!id.startsWith('c:'))return null;
  if(id==='c:add')return callback(9,createModal().data);
+ const playersButton=/^c:players:([a-f0-9-]{36})$/i.exec(id);
+ if(playersButton&&RE_UUID.test(playersButton[1]))return callback(9,updatePlayersModal(playersButton[1]).data);
  let m=/^c:browse:(-?\d{1,3})$/.exec(id);
  if(m){ctx.waitUntil(discordAsync(i,env,{kind:'browse',page:Math.max(0,Number(m[1]))}));return callback(6);}
  m=/^c:select:(\d{1,3})$/.exec(id);
@@ -304,4 +389,4 @@ export async function customsFetch(request,env){
  if(!path.startsWith('/api/customs')&&!path.startsWith('/auth/discord/'))return null;
  try{return await website(request,env);}catch(e){console.error('Customs API error',e);return siteJson({error:'Customs service unavailable.'},503);}
 }
-export const _customsTest={cleanInvite,validateForm,publicEntry,browseView,detailView,createModal,isAdmin,postMatch};
+export const _customsTest={cleanInvite,validateForm,parsePlayers,publicEntry,browseView,detailView,createModal,updatePlayersModal,isAdmin,postMatch,updatePlayers};
