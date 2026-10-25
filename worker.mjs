@@ -444,7 +444,8 @@ async function onInteraction(interaction, env, ctx) {
     if (!MODES[params.mode]) return responseCallback(4, {content: 'Unknown mode.', flags:64});
     const sort = ['players', 'space', 'ping'].includes(params.sort) ? params.sort : 'players';
     ctx.waitUntil(renderList(interaction, env, params.mode, 0, sort, false));
-    return responseCallback(5, {flags:64});
+    // Public response: omit EPHEMERAL (64) so the server browser is visible in chat.
+    return responseCallback(5);
   }
   if (interaction.type === 3) {
     const id = interaction.data?.custom_id || '';
