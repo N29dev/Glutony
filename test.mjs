@@ -4,6 +4,7 @@ import worker, { _test as helpers } from './worker.mjs';
 
 const place8 = '124087144919678';
 const placePro = '99999183305180';
+const placeMain = '18668065416';
 const server8 = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const serverPro = '11111111-2222-3333-4444-555555555555';
 const keys = await webcrypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
@@ -20,6 +21,15 @@ globalThis.fetch = async (url, options = {}) => {
   const method = options.method || 'GET';
   calls.push({address, method, body: options.body});
   if (address.includes('games.roblox.com')) {
+    if(address.includes(placeMain)) {
+      // Main is intentionally sampled: return 30 joinable entries in the first
+      // (and only) Roblox API page so the Worker must cap the public list at 24.
+      const data=Array.from({length:30},(_,i)=>({
+        id:'70000000-0000-4000-8000-'+String(i+1).padStart(12,'0'),
+        playing:4,maxPlayers:10,ping:65,playerTokens:[]
+      }));
+      return Response.json({data,nextPageCursor:'more-results-not-fetched'});
+    }
     const pro = address.includes(placePro);
     return Response.json({data: [{
       id: pro ? serverPro : server8,
@@ -75,6 +85,8 @@ const invalid = await worker.fetch(new Request('https://glutony.example/interact
 assert.equal(invalid.status,401,'Unsigned request must fail');
 assert.equal(helpers.config(env, '8v8').placeId,place8);
 assert.equal(helpers.config(env, 'pro').placeId,placePro);
+assert.equal(helpers.config(env, 'main').placeId,placeMain);
+assert.equal(helpers.config(env, 'main').pages,1,'Main always uses one Roblox API page');
 assert.equal(helpers.flagEmoji('BR'),'🇧🇷');
 assert.equal(helpers.normalizedServer({id:server8,playing:16,maxPlayers:16}),null,'Exclude full servers');
 
@@ -97,6 +109,13 @@ assert.ok(contains(edited,'Paris'));
 assert.ok(calls.some(x=>x.address.includes('/v1/games/'+placePro+'/')));
 assert.equal(edited.components[1].components[0].custom_id,'g:s:pro:0:players');
 
+response = await invoke({type:2,application_id:env.DISCORD_APPLICATION_ID,token:'main',data:{name:'blr',options:[{name:'mode',value:'main'}]}});
+assert.equal(response.type,5);
+edited=lastEdit();
+assert.ok(contains(edited,'BL:R Main Lobby'));
+assert.ok(contains(edited,'24 joinable servers'));
+assert.equal(edited.components[1].components[0].custom_id,'g:s:main:0:players');
+assert.ok(calls.some(x=>x.address.includes('/v1/games/'+placeMain+'/')));
 response = await invoke({type:3,application_id:env.DISCORD_APPLICATION_ID,token:'pro-selected',data:{custom_id:'g:s:pro:0:players',values:[serverPro]}});
 assert.equal(response.type,6);
 edited = lastEdit();
@@ -145,6 +164,14 @@ assert.equal(proList.servers[0].version,333);
 assert.ok(new URL(proList.servers[0].joinPc).pathname==='/join');
 assert.equal(new URL(proList.servers[0].joinMobile).searchParams.get('device'),'mobile');
 assert.ok(!JSON.stringify(proList).includes('preview1'),'Browser data must not disclose raw player tokens');
+const mainCallsBefore=calls.filter(x=>x.address.includes('/v1/games/'+placeMain+'/')).length;
+const publicMain=await worker.fetch(new Request('https://glutony.example/api/servers?mode=main'),env,{});
+const mainList=await publicMain.json();
+assert.equal(mainList.placeId,placeMain);
+assert.equal(mainList.servers.length,24,'Main website response caps at 24 servers');
+assert.equal(mainList.hasMore,true,'Main displays the existence of additional servers');
+assert.equal(calls.filter(x=>x.address.includes('/v1/games/'+placeMain+'/')).length-mainCallsBefore,0,
+ 'Main website response should reuse the recent cached single Roblox API page');
 const public8=await worker.fetch(new Request('https://glutony.example/api/servers?mode=8v8'),env,{});
 assert.equal((await public8.json()).placeId,place8);
 const invalidMode=await worker.fetch(new Request('https://glutony.example/api/servers?mode=customs'),env,{});
@@ -177,4 +204,4 @@ console.log('PASS: passive region refresh validates server IDs, CORS, and known 
 
 console.log('PASS: website-facing 8v8/Pro JSON, CORS, join links, validation, and optional player avatars');
 
-console.log('PASS: Glutony 8v8, Pro, flags, menus, details, join links, signature verification, and registration');
+console.log('PASS: Glutony Main 24-server sample, 8v8, Pro, flags, menus, details, joins, signatures, registration');
