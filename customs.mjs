@@ -21,22 +21,23 @@ function cleanInvite(raw) {
  return {code,url:'https://www.roblox.com/share?code='+encodeURIComponent(code)+'&type=Server'};
 }
 // Optional host-reported occupancy. This must never be labeled as live Roblox data.
+// BL:R custom private servers have a fixed 20-player cap.
+// Only the current player count is host-reported. Ignore legacy client-submitted
+// capacities; the server enforces the actual 20-player limit.
+const CUSTOMS_CAPACITY=20;
 function parsePlayers(form){
  let current=form?.currentPlayers??form?.playerCurrent;
- let capacity=form?.capacity??form?.playerCapacity;
- const text=String(form?.players??'').trim();
- if(text){
-  const match=/^(\d{1,3})\s*\/\s*(\d{1,3})$/.exec(text);
-  if(!match)return {error:'Players must look like 4/10.'};
-  current=match[1];capacity=match[2];
+ const legacy=String(form?.players??'').trim();
+ if(legacy){
+  const match=/^(\d{1,2})(?:\s*\/\s*\d{1,3})?$/.exec(legacy);
+  if(!match)return {error:'Enter current players from 0 to 20 (example: 4).'};
+  current=match[1];
  }
- if((current===undefined||current===null||String(current).trim()==='') &&
-    (capacity===undefined||capacity===null||String(capacity).trim()===''))return {current:null,capacity:null};
- if(current===undefined||capacity===undefined || current===null||capacity===null ||
-    !/^\d{1,3}$/.test(String(current)) || !/^\d{1,3}$/.test(String(capacity)))return {error:'Enter both current and maximum players (example: 4/10).'};
- const c=Number(current),m=Number(capacity);
- if(c<0||m<1||m>100||c>m)return {error:'Player count must be between 0 and capacity; capacity must be 1–100.'};
- return {current:c,capacity:m};
+ if(current===undefined||current===null||String(current).trim()==='')return {current:null,capacity:CUSTOMS_CAPACITY};
+ if(!/^\d{1,2}$/.test(String(current).trim()))return {error:'Enter a whole number of players from 0 to 20.'};
+ const n=Number(current);
+ if(n<0||n>CUSTOMS_CAPACITY)return {error:'Private servers hold at most 20 players.'};
+ return {current:n,capacity:CUSTOMS_CAPACITY};
 }
 function validateForm(form){
  const title=safe(form?.title,64),region=safe(form?.region||'Any region',35),note=safe(form?.note,180);
@@ -50,8 +51,8 @@ function validateForm(form){
 }
 function publicEntry(r){
  return {id:r.id,title:r.title,region:r.region,note:r.note,ownerName:r.owner_name,link:r.invite_url,createdAt:r.created_at,expiresAt:r.expires_at,
- playerCurrent:Number.isInteger(r.player_current)?r.player_current:null,
- playerCapacity:Number.isInteger(r.player_capacity)?r.player_capacity:null,
+ playerCurrent:Number.isInteger(r.player_current)&&r.player_current>=0&&r.player_current<=CUSTOMS_CAPACITY?r.player_current:null,
+ playerCapacity:CUSTOMS_CAPACITY,
  playerReportedAt:Number.isInteger(r.player_reported_at)?r.player_reported_at:null};
 }
 async function fetchActive(env){
@@ -279,9 +280,9 @@ function browseView(items,page,ready=true){
  for(let i=0;i<showing.length;i++){
   const o=showing[i];
   const shown=publicEntry(o);
-  const count=shown.playerCurrent!==null&&shown.playerCapacity!==null
-    ?' · '+shown.playerCurrent+'/'+shown.playerCapacity+' players (host reported)'
-    :' · Players unknown';
+  const count=shown.playerCurrent!==null
+    ?' · '+shown.playerCurrent+'/20 players (host reported)'
+    :' · Players ?/20 (not reported)';
   parts.push(text('**'+(current*4+i+1)+'. '+safe(o.title,64)+'** · Host region: '+safe(o.region,35)+count+'\n'+safe(o.note||'Looking for teammates',150)+'\n-# Hosted by '+safe(o.owner_name,32)+' · Expires <t:'+Math.floor(o.expires_at/1000)+':R>'));
  }
  parts.push(text('-# Only public Roblox server invite links are accepted. Do not share account details.'));
@@ -295,8 +296,8 @@ function detailView(item,page){
  return msg([
   {type:17,accent_color:0x32c99a,components:[
    text('## ⚽ '+safe(item.title,64)+'\n-# Community-hosted private match · Host-selected region: '+safe(item.region,35)),
-   text('**Players:** '+(item.player_current!==null&&Number.isInteger(item.player_current)&&Number.isInteger(item.player_capacity)?
-    item.player_current+'/'+item.player_capacity+' (host reported, not live)':'Unknown')+
+   text('**Players:** '+(Number.isInteger(item.player_current)&&item.player_current>=0&&item.player_current<=CUSTOMS_CAPACITY?
+    item.player_current+'/20 (host reported, not live)':'?/20 (not reported)')+
     '\n**Host:** '+safe(item.owner_name,32)+'\n**Note:** '+safe(item.note||'Looking for teammates',180)+'\n**Expires:** <t:'+Math.floor(item.expires_at/1000)+':R>'),
    text('-# This invite was submitted by another player; Glutony cannot verify that it belongs to BL:R.')
   ]},
@@ -311,13 +312,12 @@ function createModal(){
   field('link','Roblox private server share URL',1,true,220),
   field('region','Region (NA / EU / Asia / etc.)',1,false,35),
   field('note','Rules / players needed (optional)',2,false,180),
-  field('players','Players (optional, e.g. 4/10)',1,false,7)
+  field('players','Current players (0–20, optional)',1,false,2)
  ]}};
 }
 function updatePlayersModal(id){
  return {type:9,data:{custom_id:'c:players-modal:'+id,title:'Update player count',components:[
-  {type:18,label:'Current players (0–100)',component:{type:4,custom_id:'currentPlayers',style:1,required:true,min_length:1,max_length:3}},
-  {type:18,label:'Maximum players (1–100)',component:{type:4,custom_id:'capacity',style:1,required:true,min_length:1,max_length:3}},
+  {type:18,label:'Current players (0–20, capacity is 20)',component:{type:4,custom_id:'currentPlayers',style:1,required:true,min_length:1,max_length:2}},
  ]}};
 }
 function callback(type,data){return json(data===undefined?{type}:{type,data});}
