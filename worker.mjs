@@ -471,7 +471,7 @@ async function renderDetail(interaction, env, mode, jobId, page, sort, refresh, 
 
 async function onInteraction(interaction, env, ctx, origin) {
   if (interaction.type === 1) return responseCallback(1);
-  if (interaction.type === 5 && interaction.data?.custom_id === 'c:modal') return customsInteraction(interaction, env, ctx);
+  if (interaction.type === 5 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
   if (interaction.type === 3 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
   if (interaction.type === 2 && interaction.data?.name === 'blr') {
     const params = Object.fromEntries((interaction.data.options || []).map(v => [v.name, v.value]));
