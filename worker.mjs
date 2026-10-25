@@ -1,0 +1,514 @@
+/**
+ * Glutony — Discord user-installable Roblox 8v8 and Pro server browser on Cloudflare Workers.
+ * No packages or Gateway connection required; paste this whole file in a Worker.
+ * The list is a sample of Roblox public servers, NOT guaranteed exhaustive.
+ * Roblox does not provide region in its public server list; RoValra may supply it.
+ * Attribution: https://www.rovalra.com (external API, unofficial).
+ */
+
+const PLACE_IDS_DEFAULT = Object.freeze({
+  '8v8': '124087144919678',
+  pro: '99999183305180',
+});
+const MODES = Object.freeze({
+  '8v8': {label: '8v8', title: 'BL:R 8v8', configKey: 'BLR_8V8_PLACE_ID'},
+  pro: {label: 'Pro', title: 'BL:R Pro Servers', configKey: 'BLR_PRO_PLACE_ID'},
+});
+const API = 'https://discord.com/api/v10';
+const PAGE_SIZE = 4;
+const SOFT_CACHE_MS = 35_000;
+const memoryCaches = new Map(); // Mode + Place ID -> most recent public server list
+const detailCache = new Map(); // Place ID + Job ID -> { details, expiry }; isolate-local, best effort
+
+const COMMAND = {
+  name: 'blr',
+  description: 'Browse Blue Lock: Rivals 8v8, Pro, and community servers',
+  type: 1,
+  integration_types: [0, 1],  // Guild Install and User Install
+  contexts: [0, 1, 2],          // Servers, bot DMs, other DMs / group DMs
+  options: [
+    {
+      name: 'mode', description: 'Which BL:R mode do you want?', type: 3, required: true,
+      choices: [
+        { name: '8v8 public servers', value: '8v8' },
+        { name: 'Pro servers (10-player)', value: 'pro' },
+        { name: 'Custom matches (coming soon)', value: 'customs' },
+      ],
+    },
+    {
+      name: 'sort', description: 'How should the servers be sorted?', type: 3, required: false,
+      choices: [
+        { name: 'Most players', value: 'players' },
+        { name: 'Most free slots', value: 'space' },
+        { name: 'Lowest reported ping', value: 'ping' },
+      ],
+    },
+  ],
+};
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+  });
+}
+
+function hexBytes(hex) {
+  if (typeof hex !== 'string' || hex.length % 2 || !/^[0-9a-f]+$/i.test(hex)) return null;
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+  return out;
+}
+
+async function verifyDiscord(request, rawBody, publicKeyHex) {
+  const signature = hexBytes(request.headers.get('x-signature-ed25519'));
+  const timestamp = request.headers.get('x-signature-timestamp');
+  const pubkey = hexBytes(publicKeyHex);
+  if (!signature || signature.length !== 64 || !pubkey || pubkey.length !== 32 || !timestamp) return false;
+  const seconds = Number(timestamp);
+  if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) return false;
+  try {
+    const key = await crypto.subtle.importKey('raw', pubkey, { name: 'Ed25519' }, false, ['verify']);
+    return await crypto.subtle.verify('Ed25519', key, signature, new TextEncoder().encode(timestamp + rawBody));
+  } catch (error) {
+    console.error('Signature verification unavailable:', error);
+    return false;
+  }
+}
+
+function equalSecret(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  let difference = 0;
+  for (let i = 0; i < a.length; i++) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return difference === 0;
+}
+
+function config(env, mode = '8v8') {
+  const def = MODES[mode];
+  if (!def) throw new Error('Unknown BL:R mode.');
+  const placeId = String(env[def.configKey] || PLACE_IDS_DEFAULT[mode]);
+  if (!/^\d{5,20}$/.test(placeId)) throw new Error(`${def.configKey} is invalid.`);
+  const pages = Math.min(5, Math.max(1, Number.parseInt(env.ROBLOX_MAX_PAGES || '3', 10) || 3));
+  return { mode, placeId, pages };
+}
+
+function normalizedServer(item) {
+  if (!item || typeof item.id !== 'string' || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.id)) return null;
+  const playing = Number(item.playing), maxPlayers = Number(item.maxPlayers);
+  if (!Number.isInteger(playing) || !Number.isInteger(maxPlayers) || playing < 0 || maxPlayers <= playing || maxPlayers > 500) return null;
+  const ping = item.ping !== null && item.ping !== undefined && Number.isFinite(Number(item.ping)) && Number(item.ping) >= 0
+    ? Math.round(Number(item.ping)) : null;
+  const playerTokens = Array.isArray(item.playerTokens) ? item.playerTokens.filter(t => typeof t === 'string' && t.length < 500).slice(0, 6) : [];
+  return { id: item.id, playing, maxPlayers, free: maxPlayers - playing, ping, playerTokens };
+}
+
+async function getServers(env, mode = '8v8', refresh = false) {
+  const { placeId, pages } = config(env, mode);
+  const cacheKey = `${mode}:${placeId}:${pages}`;
+  const cached = memoryCaches.get(cacheKey);
+  const age = cached ? Date.now() - cached.at : Infinity;
+  if (cached && (age < SOFT_CACHE_MS || (refresh && age < 15_000))) {
+    return cached;
+  }
+  const servers = new Map();
+  let cursor = null;
+  let pageCount = 0;
+  do {
+    const url = new URL(`https://games.roblox.com/v1/games/${placeId}/servers/Public`);
+    url.searchParams.set('limit', '100');
+    url.searchParams.set('sortOrder', 'Asc');
+    url.searchParams.set('excludeFullGames', 'true');
+    if (cursor) url.searchParams.set('cursor', cursor);
+    let response;
+    try {
+      response = await fetch(url.toString(), {
+        headers: { 'accept': 'application/json', 'user-agent': 'GlutonyServerBrowser/1.1' },
+        signal: AbortSignal.timeout(6500),
+      });
+    } catch (_) {
+      if (cached) return cached; // Remain useful if Roblox has a temporary outage.
+      throw new Error('Roblox did not respond. Please try again later.');
+    }
+    if (response.status === 429) {
+      if (cached) return cached;
+      throw new Error('Roblox is rate-limiting server requests. Please try again later.');
+    }
+    if (response.status === 401 || response.status === 403) throw new Error('Roblox denied API access from Cloudflare.');
+    if (!response.ok) throw new Error(`Roblox server API returned HTTP ${response.status}.`);
+    let payload;
+    try { payload = await response.json(); } catch (_) { throw new Error('Roblox returned invalid JSON.'); }
+    if (!payload || !Array.isArray(payload.data)) throw new Error('Roblox returned an unexpected server response.');
+    for (const item of payload.data) {
+      const server = normalizedServer(item);
+      if (server) servers.set(server.id, server);
+    }
+    cursor = typeof payload.nextPageCursor === 'string' ? payload.nextPageCursor : null;
+    pageCount++;
+  } while (cursor && pageCount < pages);
+  const result = {
+    mode, at: Date.now(), placeId, maxPages: pages, servers: Array.from(servers.values()),
+    hasMore: !!cursor, scanned: pageCount,
+  };
+  memoryCaches.set(cacheKey, result);
+  return result;
+}
+
+// RoValra has a separate, optional server-details endpoint. It reports region,
+// place_version, and first_seen. This information can be unavailable/stale.
+// Never send Discord or Roblox credentials to it.
+function safeLocationPart(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/[^\p{L}\p{N} .,\-']/gu, '').replace(/\s+/g, ' ').slice(0, 60);
+}
+function locationFromDetail(detail) {
+  const city = safeLocationPart(detail?.city);
+  const state = safeLocationPart(detail?.region);
+  const country = safeLocationPart(detail?.country);
+  const parts = [city, state !== city ? state : '', country]
+    .filter(v => v && v.toLowerCase() !== 'unknown');
+  return [...new Set(parts)].join(', ').slice(0, 140) || null;
+}
+
+const countryNames = {
+  US: 'United States', BR: 'Brazil', SG: 'Singapore', DE: 'Germany', FR: 'France',
+  GB: 'United Kingdom', UK: 'United Kingdom', JP: 'Japan', AU: 'Australia',
+  CA: 'Canada', NL: 'Netherlands', IN: 'India', PL: 'Poland', ES: 'Spain',
+  IT: 'Italy', KR: 'South Korea', HK: 'Hong Kong', ID: 'Indonesia',
+  MX: 'Mexico', TH: 'Thailand', TR: 'Turkey', AE: 'United Arab Emirates',
+};
+function countryCode(value) {
+  const raw = safeLocationPart(value).toLowerCase();
+  if (!raw) return null;
+  if (raw === 'uk') return 'GB';
+  if (raw.length === 2 && /^[a-z]{2}$/.test(raw)) return raw.toUpperCase();
+  const aliases = { 'united states of america': 'US', 'usa': 'US', 'great britain': 'GB', 'korea, republic of': 'KR', 'south korea': 'KR' };
+  if (aliases[raw]) return aliases[raw];
+  for (const [code, name] of Object.entries(countryNames)) if (name.toLowerCase() === raw) return code === 'UK' ? 'GB' : code;
+  return null;
+}
+function flagEmoji(code) {
+  if (!code || !/^[A-Z]{2}$/.test(code)) return '🌐';
+  return String.fromCodePoint(...[...code].map(c => 127397 + c.charCodeAt(0)));
+}
+function shortLocation(server) {
+  const d = server.details || {};
+  const city = safeLocationPart(d.city);
+  const state = safeLocationPart(d.region);
+  const country = safeLocationPart(d.country);
+  if (city) return city + (state && state !== city ? `, ${state}` : '');
+  return countryNames[countryCode(country)] || country || 'Unknown region';
+}
+function regionFlag(server) { return flagEmoji(countryCode(server.details?.country)); }
+
+function applyDetail(server, data) {
+  if (!data) return;
+  server.details = { ...data };
+  server.region = data.location || null;
+}
+
+async function attachDetails(result, servers, env) {
+  if (String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() === 'false') return;
+  const now = Date.now();
+  const missing = [];
+  for (const server of servers) {
+    const cached = detailCache.get(`${result.placeId}:${server.id}`);
+    if (cached && cached.expiry > now) applyDetail(server, cached.details);
+    else missing.push(server);
+  }
+  if (!missing.length) return;
+  const url = new URL('https://apis.rovalra.com/v1/servers/details');
+  url.searchParams.set('place_id', result.placeId);
+  url.searchParams.set('server_ids', missing.map(s => s.id).join(','));
+  try {
+    const response = await fetch(url.toString(), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(3500) });
+    if (!response.ok) throw new Error(`RoValra HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload?.status !== 'success' || !Array.isArray(payload.servers)) throw new Error('Unexpected RoValra response');
+    const found = new Map();
+    for (const entry of payload.servers) {
+      if (typeof entry?.server_id !== 'string') continue;
+      const version = Number(entry.place_version);
+      const firstSeen = typeof entry.first_seen === 'string' ? entry.first_seen.slice(0, 40) : null;
+      found.set(entry.server_id, {
+        location: locationFromDetail(entry),
+        city: safeLocationPart(entry.city), region: safeLocationPart(entry.region), country: safeLocationPart(entry.country),
+        version: Number.isInteger(version) && version > 0 && version < 1e9 ? version : null,
+        firstSeen,
+      });
+    }
+    for (const server of missing) {
+      const details = found.get(server.id) || null;
+      applyDetail(server, details);
+      detailCache.set(`${result.placeId}:${server.id}`, {details, expiry: now + (details ? 180_000 : 40_000)});
+    }
+  } catch (err) {
+    console.warn('Optional RoValra details failed:', String(err?.message || err));
+    for (const server of missing) detailCache.set(`${result.placeId}:${server.id}`, {details: null, expiry: now + 30_000});
+  }
+  if (detailCache.size > 800) detailCache.clear();
+}
+
+function uptimeLabel(firstSeen) {
+  if (!firstSeen) return 'Unknown';
+  const ts = Date.parse(firstSeen.endsWith('Z') || /[+\-]\d\d:\d\d$/.test(firstSeen) ? firstSeen : firstSeen + 'Z');
+  if (!Number.isFinite(ts)) return 'Unknown';
+  const elapsed = Date.now() - ts;
+  if (elapsed < 0 || elapsed > 90 * 86_400_000) return 'Unknown';
+  const mins = Math.floor(elapsed / 60000);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  if (days) return `~${days}d ${hours % 24}h`;
+  if (hours) return `~${hours}h ${mins % 60}m`;
+  return `~${mins}m`;
+}
+
+// Roblox's public server API may provide anonymized playerTokens. A public
+// thumbnails batch endpoint can sometimes resolve those tokens to headshot URLs.
+// Never attempt to reverse them into player identities; thumbnails are optional.
+async function getPlayerHeadshots(server) {
+  const tokens = (server.playerTokens || []).slice(0, 4);
+  if (!tokens.length) return [];
+  const requests = tokens.map((token, idx) => ({
+    requestId: `glutony-${idx}-${token.slice(0, 12)}`,
+    token, type: 'AvatarHeadShot', size: '150x150', format: 'Png', isCircular: true,
+  }));
+  try {
+    const response = await fetch('https://thumbnails.roblox.com/v1/batch', {
+      method: 'POST', headers: {'content-type': 'application/json', 'accept': 'application/json'},
+      body: JSON.stringify(requests), signal: AbortSignal.timeout(4500),
+    });
+    if (!response.ok) throw new Error(`Roblox thumbnails HTTP ${response.status}`);
+    const data = await response.json();
+    return (Array.isArray(data?.data) ? data.data : [])
+      .map(x => typeof x?.imageUrl === 'string' ? x.imageUrl : '')
+      .filter(u => {
+        try { const url = new URL(u); return url.protocol === 'https:' && (url.hostname === 'rbxcdn.com' || url.hostname.endsWith('.rbxcdn.com')); }
+        catch { return false; }
+      }).slice(0, 4);
+  } catch (err) {
+    console.warn('Optional player headshots failed:', String(err?.message || err));
+    return [];
+  }
+}
+
+function sortServers(items, sort) {
+  if (sort === 'space') return [...items].sort((a, b) => b.free - a.free || b.playing - a.playing);
+  if (sort === 'ping') return [...items].sort((a, b) => (a.ping ?? 1e9) - (b.ping ?? 1e9) || b.playing - a.playing);
+  return [...items].sort((a, b) => b.playing - a.playing || b.free - a.free);
+}
+
+function joinLinks(placeId, jobId) {
+  const web = new URL('https://www.roblox.com/games/start');
+  web.searchParams.set('placeId', placeId);
+  web.searchParams.set('gameInstanceId', jobId);
+  const direct = `roblox://placeId=${placeId}&gameInstanceId=${jobId}`;
+  const mobile = new URL('https://ro.blox.com/Ebh5');
+  mobile.searchParams.set('af_dp', direct);
+  mobile.searchParams.set('af_web_dp', web.toString());
+  return { pc: web.toString(), mobile: mobile.toString(), direct };
+}
+
+const V2 = 1 << 15;
+const textPart = content => ({type: 10, content});
+const actionRow = components => ({type: 1, components});
+const button = (label, custom_id, disabled = false, primary = false) => ({type: 2, style: primary ? 1 : 2, custom_id, label, disabled});
+const urlButton = (label, url) => ({type: 2, style: 5, label, url});
+function v2Message(components) {
+  return {flags: V2, components, allowed_mentions: {parse: []}};
+}
+function pagedServers(result, page, sort) {
+  const items = sortServers(result.servers, sort);
+  const total = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const current = Math.max(0, Math.min(total - 1, page));
+  return {items, total, current, visible: items.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE)};
+}
+function pingLabel(s) {return s.ping == null ? 'N/A' : `${s.ping} ms`;}
+
+function listMessage(result, page, sort) {
+  const {items, total, current, visible} = pagedServers(result, page, sort);
+  const children = [
+    textPart(`## ⚽ Glutony · ${MODES[result.mode || '8v8'].title}\n-# Public servers · Select one to join`),
+  ];
+  if (!items.length) children.push(textPart('No joinable servers found in the scanned pages. Try **Refresh**.'));
+  for (const [i, s] of visible.entries()) {
+    const number = current * PAGE_SIZE + i + 1;
+    const region = shortLocation(s);
+    const version = s.details?.version ? ` · v${s.details.version}` : '';
+    children.push(textPart(`**${number}. ${regionFlag(s)} ${region}**\n${s.playing}/${s.maxPlayers} players · ${s.free} open · ${pingLabel(s)}${version}`));
+  }
+  children.push(textPart(`-# Page ${current + 1}/${total} · ${items.length} joinable server${items.length === 1 ? '' : 's'} in ${result.scanned} API page(s)${result.hasMore ? ' · More may exist' : ''}\n-# Locations and version: RoValra, when available · Ping: Roblox-reported`));
+  const rows = [];
+  if (visible.length) rows.push(actionRow([{
+    type: 3, custom_id: `g:s:${result.mode || '8v8'}:${current}:${sort}`, placeholder: 'Choose a server to view & join',
+    min_values: 1, max_values: 1,
+    options: visible.map((s, i) => ({
+      label: `${current * PAGE_SIZE + i + 1}. ${shortLocation(s)}`.slice(0, 100),
+      value: s.id,
+      description: `${s.playing}/${s.maxPlayers} players · ${pingLabel(s)}`.slice(0, 100),
+      emoji: {name: regionFlag(s)},
+    })),
+  }]));
+  rows.push(actionRow([
+    button('◀ Previous', `g:p:${result.mode || '8v8'}:${current - 1}:${sort}`, current === 0),
+    button('↻ Refresh', `g:r:${result.mode || '8v8'}:${current}:${sort}`, false, true),
+    button('Next ▶', `g:p:${result.mode || '8v8'}:${current + 1}:${sort}`, current + 1 >= total),
+  ]));
+  return v2Message([{type: 17, accent_color: 0x32c99a, components: children}, ...rows]);
+}
+
+function detailMessage(result, server, page, sort, headshots) {
+  const links = joinLinks(result.placeId, server.id);
+  const country = countryCode(server.details?.country);
+  const flag = country ? `https://flagcdn.com/w80/${country.toLowerCase()}.png` : null;
+  const fullRegion = server.region || 'Unknown region';
+  const age = uptimeLabel(server.details?.firstSeen);
+  const version = server.details?.version ? `v${server.details.version}` : 'Unknown';
+  const children = [
+    textPart(`## ${regionFlag(server)} ${fullRegion}\n-# ${MODES[result.mode || '8v8'].title} · Public server`),
+    {type: 14, divider: true, spacing: 1},
+    textPart(`### ${server.playing} / ${server.maxPlayers} players\n${server.free} slots available · **${pingLabel(server)}** Roblox-reported ping`),
+    textPart(`**Place version:** ${version}\n**Uptime:** ${age} (estimated from first seen)\n**Server ID:** \`${server.id}\``),
+  ];
+  if (headshots.length) {
+    children.push({type: 14, divider: true, spacing: 1});
+    children.push(textPart(`**Players** · ${headshots.length} preview${headshots.length === 1 ? '' : 's'}${server.playing > headshots.length ? ` · +${server.playing - headshots.length} others` : ''}`));
+    children.push({type: 12, items: headshots.map((url, i) => ({media: {url}, description: `Player avatar preview ${i + 1}`}))});
+  } else {
+    children.push(textPart('-# Player headshots unavailable from Roblox right now.'));
+  }
+  children.push(textPart('-# Region, version and age via RoValra where available · Slots may change before joining'));
+  // Discord Components V2 allows a thumbnail beside a section. Use the emoji
+  // in the heading, plus the flag image when the country is known.
+  if (flag) {
+    children[0] = {type: 9, components: [children[0]], accessory: {type: 11, media: {url: flag}, description: `${country} flag`}};
+  }
+  return v2Message([
+    {type: 17, accent_color: 0x32c99a, components: children},
+    actionRow([urlButton('Join PC', links.pc), urlButton('Join Mobile', links.mobile)]),
+    actionRow([button('◀ Back to servers', `g:b:${result.mode || '8v8'}:${page}:${sort}`), button('↻ Refresh details', `g:d:${result.mode || '8v8'}:${server.id}:${page}:${sort}`, false, true)]),
+  ]);
+}
+
+function errorMessage(title, description, retryId) {
+  const data = [ {type:17, accent_color:0xe57373, components:[textPart(`### ⚠️ ${title}\n${String(description).slice(0,800)}`)]} ];
+  if (retryId) data.push(actionRow([button('↻ Retry',retryId,false,true)]));
+  return v2Message(data);
+}
+
+async function editOriginal(interaction, data) {
+  const url = `${API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+  const response = await fetch(url, {
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data),
+  });
+  if (!response.ok) console.error('Discord edit failed', response.status, (await response.text()).slice(0, 200));
+}
+
+function responseCallback(type, data) { return json(data === undefined ? { type } : { type, data }); }
+
+async function renderList(interaction, env, mode, page, sort, refresh) {
+  try {
+    const result = await getServers(env, mode, refresh);
+    const {visible} = pagedServers(result, page, sort);
+    await attachDetails(result, visible, env);
+    await editOriginal(interaction, listMessage(result, page, sort));
+  } catch (error) {
+    console.error('Glutony list failure:', error);
+    await editOriginal(interaction, errorMessage('Could not load servers', error?.message || 'Unknown error', `g:r:${mode}:0:${sort}`));
+  }
+}
+
+async function renderDetail(interaction, env, mode, jobId, page, sort, refresh) {
+  try {
+    const result = await getServers(env, mode, refresh);
+    const server = result.servers.find(s => s.id === jobId);
+    if (!server) {
+      await editOriginal(interaction, errorMessage('Server not found', 'The server may have closed or the listing has changed.', `g:b:${result.mode || '8v8'}:${page}:${sort}`));
+      return;
+    }
+    await attachDetails(result, [server], env);
+    const headshots = await getPlayerHeadshots(server);
+    await editOriginal(interaction, detailMessage(result, server, page, sort, headshots));
+  } catch (error) {
+    console.error('Glutony detail failure:', error);
+    await editOriginal(interaction, errorMessage('Could not load details', error?.message || 'Unknown error', `g:b:${mode}:${page}:${sort}`));
+  }
+}
+
+async function onInteraction(interaction, env, ctx) {
+  if (interaction.type === 1) return responseCallback(1);
+  if (interaction.type === 2 && interaction.data?.name === 'blr') {
+    const params = Object.fromEntries((interaction.data.options || []).map(v => [v.name, v.value]));
+    if (params.mode === 'customs') return responseCallback(4, {
+      content: '⚽ **Glutony Customs is planned!** Soon, players will be able to share private-server invitations and find teammates.',
+      flags: 64, allowed_mentions: {parse: []},
+    });
+    if (!MODES[params.mode]) return responseCallback(4, {content: 'Unknown mode.', flags:64});
+    const sort = ['players', 'space', 'ping'].includes(params.sort) ? params.sort : 'players';
+    ctx.waitUntil(renderList(interaction, env, params.mode, 0, sort, false));
+    return responseCallback(5, {flags:64});
+  }
+  if (interaction.type === 3) {
+    const id = interaction.data?.custom_id || '';
+    // Current IDs include mode to avoid accidentally switching to 8v8 when
+    // navigating a Pro server list. Older 8v8 messages are still supported.
+    const nav = /^g:(p|r|b):(?:(8v8|pro):)?(-?\d{1,3}):(players|space|ping)$/.exec(id);
+    if (nav) {
+      const mode = nav[2] || '8v8';
+      const page = Math.min(99, Math.max(0, Number(nav[3])));
+      ctx.waitUntil(renderList(interaction, env, mode, page, nav[4], nav[1] === 'r'));
+      return responseCallback(6);
+    }
+    const select = /^g:s:(?:(8v8|pro):)?(\d{1,3}):(players|space|ping)$/.exec(id);
+    if (select) {
+      const jobId = interaction.data?.values?.[0] || '';
+      if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(jobId))
+        return responseCallback(4, {content:'Invalid server selection.', flags:64});
+      ctx.waitUntil(renderDetail(interaction, env, select[1] || '8v8', jobId, Number(select[2]), select[3], false));
+      return responseCallback(6);
+    }
+    const detail = /^g:d:(?:(8v8|pro):)?([0-9a-f-]{36}):(\d{1,3}):(players|space|ping)$/i.exec(id);
+    if (detail) {
+      ctx.waitUntil(renderDetail(interaction, env, detail[1] || '8v8', detail[2], Number(detail[3]), detail[4], true));
+      return responseCallback(6);
+    }
+    return responseCallback(4, {content:'This button is no longer supported. Run `/blr` again.', flags:64});
+  }
+  return responseCallback(4, {content:'Unsupported command.', flags:64});
+}
+
+async function registerCommand(request, env) {
+  if (!env.SETUP_KEY || env.SETUP_KEY.length < 20 || !equalSecret(request.headers.get('authorization'), `Bearer ${env.SETUP_KEY}`)) {
+    return json({ error: 'Not authorized. Provide an Authorization: Bearer header with your long SETUP_KEY.' }, 403);
+  }
+  if (!env.DISCORD_BOT_TOKEN || !/^\d{15,22}$/.test(String(env.DISCORD_APPLICATION_ID || ''))) {
+    return json({ error: 'Configure DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID first.' }, 400);
+  }
+  const response = await fetch(`${API}/applications/${env.DISCORD_APPLICATION_ID}/commands`, {
+    method: 'POST',
+    headers: { authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify(COMMAND),
+  });
+  const body = await response.text();
+  if (!response.ok) return json({ error: 'Discord rejected /blr registration', status: response.status, detail: body.slice(0, 1200) }, 502);
+  const command = JSON.parse(body);
+  return json({ ok: true, registered: command.name, command_id: command.id, user_install_enabled: true });
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const { pathname } = new URL(request.url);
+    if (request.method === 'GET' && pathname === '/') {
+      return json({ bot: 'Glutony', status: 'online', mode: 'Cloudflare Workers', interaction_endpoint: '/interactions' });
+    }
+    if (request.method === 'POST' && pathname === '/admin/register') return registerCommand(request, env);
+    if (request.method !== 'POST' || pathname !== '/interactions') return json({ error: 'Not found' }, 404);
+    if (!env.DISCORD_PUBLIC_KEY) return json({ error: 'DISCORD_PUBLIC_KEY is not configured.' }, 500);
+    const rawBody = await request.text();
+    if (!await verifyDiscord(request, rawBody, env.DISCORD_PUBLIC_KEY)) return json({ error: 'Invalid Discord signature.' }, 401);
+    let interaction;
+    try { interaction = JSON.parse(rawBody); } catch (_) { return json({ error: 'Malformed JSON' }, 400); }
+    try { return await onInteraction(interaction, env, ctx); }
+    catch (error) { console.error(error); return responseCallback(4, { content: 'An unexpected error occurred.', flags: 64 }); }
+  },
+};
+
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, listMessage, detailMessage, pagedServers, getServers, attachDetails, locationFromDetail, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
