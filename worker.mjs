@@ -106,6 +106,15 @@ function normalizedServer(item) {
   return { id: item.id, playing, maxPlayers, free: maxPlayers - playing, ping, playerTokens };
 }
 
+// Deterministic coverage sample across already-fetched public server pages.
+// Keeps request budgets unchanged while avoiding first-page/first-60 bias.
+// Sampling cannot guarantee every geographical datacenter is present.
+function sampleSpread(items,limit){
+ if(items.length<=limit)return items.slice();
+ const output=[];
+ for(let i=0;i<limit;i++)output.push(items[Math.floor((i+.5)*items.length/limit)]);
+ return output;
+}
 async function getServers(env, mode = '8v8', refresh = false) {
   const { placeId, pages } = config(env, mode);
   const cacheKey = `${mode}:${placeId}:${pages}`;
@@ -150,7 +159,7 @@ async function getServers(env, mode = '8v8', refresh = false) {
     pageCount++;
   } while (cursor && pageCount < pages);
   const result = {
-    mode, at: Date.now(), placeId, maxPages: pages, servers: Array.from(servers.values()).slice(0,mode==='main'?24:Infinity),
+    mode, at: Date.now(), placeId, maxPages: pages, servers: mode==='main'?sampleSpread(Array.from(servers.values()),24):Array.from(servers.values()),
     hasMore: !!cursor || (mode==='main'&&servers.size>24), scanned: pageCount,
   };
   memoryCaches.set(cacheKey, result);
@@ -535,7 +544,7 @@ async function websiteServers(request, env) {
   try {
     const result = await getServers(env, mode, false);
     // Fetch regional details in a single RoValra batch. Cap it for rate limits.
-    const entries = result.servers.slice(0, mode==='main'?24:60);
+    const entries = sampleSpread(result.servers,mode==='main'?24:60);
     for (let i=0; i<Math.min(entries.length, 60); i+=20) {
       await attachDetails(result, entries.slice(i, i+20), env);
     }
