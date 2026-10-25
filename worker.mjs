@@ -11,10 +11,12 @@ import {customsInteraction, customsFetch} from './customs.mjs';
 const PLACE_IDS_DEFAULT = Object.freeze({
   '8v8': '124087144919678',
   pro: '99999183305180',
+  main: '18668065416',
 });
 const MODES = Object.freeze({
   '8v8': {label: '8v8', title: 'BL:R 8v8', configKey: 'BLR_8V8_PLACE_ID'},
   pro: {label: 'Pro', title: 'BL:R Pro Servers', configKey: 'BLR_PRO_PLACE_ID'},
+  main: {label: 'Main', title: 'BL:R Main Lobby', configKey: 'BLR_MAIN_PLACE_ID'},
 });
 const API = 'https://discord.com/api/v10';
 const PAGE_SIZE = 4;
@@ -24,7 +26,7 @@ const detailCache = new Map(); // Place ID + Job ID -> { details, expiry }; isol
 
 const COMMAND = {
   name: 'blr',
-  description: 'Browse Blue Lock: Rivals 8v8, Pro, and community servers',
+  description: 'Browse Blue Lock: Rivals Main, 8v8, Pro, and community servers',
   type: 1,
   integration_types: [0, 1],  // Guild Install and User Install
   contexts: [0, 1, 2],          // Servers, bot DMs, other DMs / group DMs
@@ -34,7 +36,8 @@ const COMMAND = {
       choices: [
         { name: '8v8 public servers', value: '8v8' },
         { name: 'Pro servers (10-player)', value: 'pro' },
-        { name: 'Custom matches (coming soon)', value: 'customs' },
+        { name: 'Main lobby (sample 24 servers)', value: 'main' },
+        { name: 'Custom matches', value: 'customs' },
       ],
     },
     {
@@ -89,7 +92,7 @@ function config(env, mode = '8v8') {
   if (!def) throw new Error('Unknown BL:R mode.');
   const placeId = String(env[def.configKey] || PLACE_IDS_DEFAULT[mode]);
   if (!/^\d{5,20}$/.test(placeId)) throw new Error(`${def.configKey} is invalid.`);
-  const pages = Math.min(5, Math.max(1, Number.parseInt(env.ROBLOX_MAX_PAGES || '3', 10) || 3));
+  const pages = mode==='main' ? 1 : Math.min(5, Math.max(1, Number.parseInt(env.ROBLOX_MAX_PAGES || '3', 10) || 3));
   return { mode, placeId, pages };
 }
 
@@ -147,8 +150,8 @@ async function getServers(env, mode = '8v8', refresh = false) {
     pageCount++;
   } while (cursor && pageCount < pages);
   const result = {
-    mode, at: Date.now(), placeId, maxPages: pages, servers: Array.from(servers.values()),
-    hasMore: !!cursor, scanned: pageCount,
+    mode, at: Date.now(), placeId, maxPages: pages, servers: Array.from(servers.values()).slice(0,mode==='main'?24:Infinity),
+    hasMore: !!cursor || (mode==='main'&&servers.size>24), scanned: pageCount,
   };
   memoryCaches.set(cacheKey, result);
   return result;
@@ -486,14 +489,14 @@ async function onInteraction(interaction, env, ctx, origin) {
     const id = interaction.data?.custom_id || '';
     // Current IDs include mode to avoid accidentally switching to 8v8 when
     // navigating a Pro server list. Older 8v8 messages are still supported.
-    const nav = /^g:(p|r|b):(?:(8v8|pro):)?(-?\d{1,3}):(players|space|ping)$/.exec(id);
+    const nav = /^g:(p|r|b):(?:(8v8|pro|main):)?(-?\d{1,3}):(players|space|ping)$/.exec(id);
     if (nav) {
       const mode = nav[2] || '8v8';
       const page = Math.min(99, Math.max(0, Number(nav[3])));
       ctx.waitUntil(renderList(interaction, env, mode, page, nav[4], nav[1] === 'r'));
       return responseCallback(6);
     }
-    const select = /^g:s:(?:(8v8|pro):)?(\d{1,3}):(players|space|ping)$/.exec(id);
+    const select = /^g:s:(?:(8v8|pro|main):)?(\d{1,3}):(players|space|ping)$/.exec(id);
     if (select) {
       const jobId = interaction.data?.values?.[0] || '';
       if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(jobId))
@@ -501,7 +504,7 @@ async function onInteraction(interaction, env, ctx, origin) {
       ctx.waitUntil(renderDetail(interaction, env, select[1] || '8v8', jobId, Number(select[2]), select[3], false, origin));
       return responseCallback(6);
     }
-    const detail = /^g:d:(?:(8v8|pro):)?([0-9a-f-]{36}):(\d{1,3}):(players|space|ping)$/i.exec(id);
+    const detail = /^g:d:(?:(8v8|pro|main):)?([0-9a-f-]{36}):(\d{1,3}):(players|space|ping)$/i.exec(id);
     if (detail) {
       ctx.waitUntil(renderDetail(interaction, env, detail[1] || '8v8', detail[2], Number(detail[3]), detail[4], true, origin));
       return responseCallback(6);
@@ -528,11 +531,11 @@ function siteJson(data, status = 200) {
 async function websiteServers(request, env) {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode') || '8v8';
-  if (!MODES[mode]) return siteJson({error:'Unknown mode; choose 8v8 or pro.'}, 400);
+  if (!MODES[mode]) return siteJson({error:'Unknown mode; choose main, 8v8, or pro.'}, 400);
   try {
     const result = await getServers(env, mode, false);
     // Fetch regional details in a single RoValra batch. Cap it for rate limits.
-    const entries = result.servers.slice(0, 60);
+    const entries = result.servers.slice(0, mode==='main'?24:60);
     for (let i=0; i<Math.min(entries.length, 60); i+=20) {
       await attachDetails(result, entries.slice(i, i+20), env);
     }
