@@ -41,6 +41,20 @@ The repository includes `wrangler.jsonc` with **`name: "glutony"`** and **`main:
 
 **Never commit real tokens, secrets, or `.dev.vars` files to GitHub.** The repo is currently public.
 
+## First deployment after connecting GitHub
+
+For an **existing** Worker, simply connecting GitHub does not deploy the repo immediately. Cloudflare requires a **new commit pushed to the production branch** to trigger a build. A documentation-only commit works as a smoke test of the automatic deployment pipeline.
+
+To check the outcome:
+
+1. Open **Cloudflare → Workers & Pages → glutony → Deployments**.
+2. Click **View build history** (this is separate from the active deployment list).
+3. Find the latest `main` build and check **Success / Failed**.
+4. If it failed, open its build logs. The active deployment can remain an older, manually deployed version until the new build succeeds.
+5. Once succeeded, a new active deployment/version should appear.
+
+Cloudflare documentation: https://developers.cloudflare.com/workers/ci-cd/builds/
+
 ## Discord setup
 
 In the [Discord Developer Portal](https://discord.com/developers/applications), select Glutony:
