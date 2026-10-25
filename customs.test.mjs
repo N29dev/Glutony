@@ -93,6 +93,43 @@ assert.ok(testEnv.lastSQL.includes("NOT EXISTS(SELECT 1 FROM customs WHERE owner
 assert.ok(testEnv.lastSQL.includes("NOT EXISTS(SELECT 1 FROM customs WHERE invite_code=?"),
  'Duplicate active share links still blocked for admins');
 assert.equal(testEnv.lastArgs.length,20,'All SQL bindings are present');
+// Player occupancy is host-reported, never implied to be live Roblox data.
+assert.deepEqual(h.parsePlayers({}),{current:null,capacity:null});
+assert.deepEqual(h.parsePlayers({players:'4/10'}),{current:4,capacity:10});
+assert.deepEqual(h.parsePlayers({currentPlayers:'0',capacity:'16'}),{current:0,capacity:16});
+assert.ok(h.parsePlayers({players:'17/16'}).error);
+assert.ok(h.parsePlayers({players:'hello'}).error);
+assert.ok(h.parsePlayers({currentPlayers:'3',capacity:''}).error);
+assert.ok(h.parsePlayers({currentPlayers:'5',capacity:'101'}).error);
+const counted=await h.postMatch(testEnv,{id:guestId,name:'Guest'},{
+ title:'Custom training',link:url,region:'NA',currentPlayers:'4',capacity:'10'
+});
+assert.equal(counted.ok,true);
+assert.equal(counted.item.playerCurrent,4);
+assert.equal(counted.item.playerCapacity,10);
+assert.equal(testEnv.lastArgs[10],4);
+assert.equal(testEnv.lastArgs[11],10);
+assert.equal(testEnv.lastArgs.length,23);
+assert.ok(testEnv.lastSQL.includes('player_reported_at'));
+const updated=await h.updatePlayers(testEnv,{id:guestId,name:'Guest'},
+ 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',{currentPlayers:'5',capacity:'10'});
+assert.equal(updated.ok,true);
+assert.equal(updated.playerCurrent,5);
+assert.equal(testEnv.lastArgs[0],5);
+assert.ok(testEnv.lastSQL.includes('owner_id=?'),'Only the owner can update player count');
+assert.ok(testEnv.lastSQL.includes('player_reported_at<=?'),'Owner edits have cooldown');
+const invalidUpdate=await h.updatePlayers(testEnv,{id:guestId,name:'Guest'},
+ 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',{currentPlayers:'15',capacity:'10'});
+assert.equal(invalidUpdate.status,400);
+const publicCount=h.publicEntry({...fixture,player_current:3,player_capacity:10,player_reported_at:Date.now()});
+assert.equal(publicCount.playerCurrent,3);
+assert.equal(publicCount.playerCapacity,10);
+assert.equal(h.publicEntry(fixture).playerCurrent,null,'Legacy listings return unknown count');
+const countModal=h.updatePlayersModal('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+assert.equal(countModal.type,9);
+assert.equal(countModal.data.components.length,2);
+console.log('PASS: optional player counts, bounds, host-only updates, reporting timestamps and Discord modal.');
+
 console.log('PASS: admin identity allowlist, posting exemption, SQL conditions, and ordinary anti-spam limits.');
 
 console.log('PASS: Customs Roblox URL validation, sanitization, public data, Discord modal, CORS, and disabled-first deployment.');
