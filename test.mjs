@@ -132,4 +132,29 @@ assert.equal(response.type,4);
 assert.equal((await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST'}),env,{})).status,403);
 assert.equal((await (await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST',headers:{authorization:'Bearer '+env.SETUP_KEY}}),env,{})).json()).registered,'blr');
 
+// Browser-facing JSON API (used by blr.n29.kz/servers).
+const publicPro = await worker.fetch(new Request('https://glutony.example/api/servers?mode=pro',{headers:{origin:'https://blr.n29.kz'}}),env,{});
+assert.equal(publicPro.status,200);
+assert.equal(publicPro.headers.get('access-control-allow-origin'),'https://blr.n29.kz');
+const proList=await publicPro.json();
+assert.equal(proList.placeId,placePro);
+assert.equal(proList.servers.length,1);
+assert.equal(proList.servers[0].id,serverPro);
+assert.equal(proList.servers[0].free,3);
+assert.equal(proList.servers[0].version,333);
+assert.ok(new URL(proList.servers[0].joinPc).pathname==='/join');
+assert.equal(new URL(proList.servers[0].joinMobile).searchParams.get('device'),'mobile');
+assert.ok(!JSON.stringify(proList).includes('preview1'),'Browser data must not disclose raw player tokens');
+const public8=await worker.fetch(new Request('https://glutony.example/api/servers?mode=8v8'),env,{});
+assert.equal((await public8.json()).placeId,place8);
+const invalidMode=await worker.fetch(new Request('https://glutony.example/api/servers?mode=customs'),env,{});
+assert.equal(invalidMode.status,400);
+const avatars=await worker.fetch(new Request('https://glutony.example/api/servers/avatars?mode=pro&id='+serverPro),env,{});
+assert.equal(avatars.status,200);
+assert.ok(Array.isArray((await avatars.json()).images));
+const options=await worker.fetch(new Request('https://glutony.example/api/servers',{method:'OPTIONS'}),env,{});
+assert.equal(options.status,204);
+
+console.log('PASS: website-facing 8v8/Pro JSON, CORS, join links, validation, and optional player avatars');
+
 console.log('PASS: Glutony 8v8, Pro, flags, menus, details, join links, signature verification, and registration');
