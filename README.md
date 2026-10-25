@@ -98,6 +98,19 @@ The landing page validates the configured BL:R place and UUID-shaped Job ID. It 
 
 Relevant docs: https://create.roblox.com/docs/production/promotion/deeplinks and reported bug https://devforum.roblox.com/t/deep-link-ignores-gameinstanceid-argument/3815549
 
+## Website server browser API
+
+The public website at [blr.n29.kz/servers/](https://blr.n29.kz/servers/) uses the same Worker as the Discord bot. Endpoints:
+
+- `GET /api/servers?mode=8v8`
+- `GET /api/servers?mode=pro`
+- `GET /api/servers/avatars?mode=pro&id=<public-job-uuid>` (optional player preview images)
+- `GET /join?placeId=<place-id>&gameInstanceId=<public-job-uuid>&device=pc` (click-to-launch page)
+
+The server list responds with place ID, mode, scanned pages, update time and up to 60 public instances: Job ID, players, capacity, Roblox-reported ping, RoValra region/version/first-seen metadata when available, and PC/mobile links. **Never expose user tokens or Discord credentials.** Browsers are allowed to read this data only from the website origin `https://blr.n29.kz` using CORS.
+
+Static website source: [N29dev/blr](https://github.com/N29dev/blr/tree/main/servers).
+
 ## Message visibility
 
 `/blr mode:8v8` and `/blr mode:pro` publish **non-ephemeral** Discord messages, visible to other participants in the channel/DM. To get the new behavior, run a **new** slash command after the updated Worker deploys; older ephemeral messages cannot be converted to public ones.
