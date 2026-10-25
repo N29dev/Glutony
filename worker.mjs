@@ -296,15 +296,46 @@ function sortServers(items, sort) {
   return [...items].sort((a, b) => b.playing - a.playing || b.free - a.free);
 }
 
-function joinLinks(placeId, jobId) {
+// Roblox's web /games/start can silently ignore gameInstanceId and matchmake randomly.
+// Discord URL buttons require HTTPS, so direct clients through our /join landing page
+// and require a user click to invoke the actual Roblox app protocol.
+function joinLinks(placeId, jobId, origin = '') {
+  const direct = `roblox://experiences/start?placeId=${placeId}&gameInstanceId=${jobId}`;
+  const legacy = `roblox://placeId=${placeId}&gameInstanceId=${jobId}`;
   const web = new URL('https://www.roblox.com/games/start');
   web.searchParams.set('placeId', placeId);
   web.searchParams.set('gameInstanceId', jobId);
-  const direct = `roblox://placeId=${placeId}&gameInstanceId=${jobId}`;
-  const mobile = new URL('https://ro.blox.com/Ebh5');
-  mobile.searchParams.set('af_dp', direct);
-  mobile.searchParams.set('af_web_dp', web.toString());
-  return { pc: web.toString(), mobile: mobile.toString(), direct };
+  const fallbackMobile = new URL('https://ro.blox.com/Ebh5');
+  fallbackMobile.searchParams.set('af_dp', direct);
+  fallbackMobile.searchParams.set('af_web_dp', web.toString());
+  fallbackMobile.searchParams.set('deep_link_value', direct);
+  if (!origin) return { pc: web.toString(), mobile: fallbackMobile.toString(), direct, legacy };
+  const bridge = new URL('/join', origin);
+  bridge.searchParams.set('placeId', placeId);
+  bridge.searchParams.set('gameInstanceId', jobId);
+  bridge.searchParams.set('device', 'pc');
+  const mobile = new URL(bridge);
+  mobile.searchParams.set('device', 'mobile');
+  return {pc: bridge.toString(), mobile: mobile.toString(), direct, legacy, fallbackMobile: fallbackMobile.toString()};
+}
+
+function joinLanding(request, env) {
+  const url = new URL(request.url);
+  const placeId = url.searchParams.get('placeId') || '';
+  const jobId = url.searchParams.get('gameInstanceId') || '';
+  const device = url.searchParams.get('device') === 'mobile' ? 'mobile' : 'pc';
+  const allowedIds = Object.keys(MODES).map(m => config(env, m).placeId);
+  if (!allowedIds.includes(placeId) || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(jobId)) {
+    return new Response('Invalid or unsupported BL:R server link.', {status: 400, headers: {'content-type':'text/plain; charset=utf-8'}});
+  }
+  const links = joinLinks(placeId, jobId);
+  const modeName = placeId === config(env, 'pro').placeId ? 'Pro' : '8v8';
+  const style = `body{margin:0;background:#0c1222;color:#edf2ff;font:16px system-ui,-apple-system,sans-serif;display:grid;place-items:center;min-height:100vh}.card{width:min(560px,92vw);padding:28px;box-sizing:border-box;background:#182238;border:1px solid #354462;border-radius:16px}h1{margin:0 0 10px;font-size:26px}p{color:#bfcee4;line-height:1.5}a.action{display:block;padding:14px 16px;border-radius:10px;background:#5865f2;color:white;text-align:center;text-decoration:none;font-weight:700;margin:16px 0 10px}.secondary{background:#2d405c!important}code{display:block;overflow-wrap:anywhere;padding:12px;background:#0c162b;border-radius:8px;font-size:13px;color:#dbe8fa}small{color:#abbad0}`;
+  const mobileNote = device === 'mobile'
+    ? `<a class="action secondary" rel="noreferrer" href="${links.mobile}">Try mobile universal link</a><p><small>If your browser blocks app links, open this page in Safari/Chrome and tap again.</small></p>`
+    : `<p><small>On macOS, you can also run this Terminal command:</small></p><code>open &quot;${links.direct}&quot;</code>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Join BL:R ${modeName} — Glutony</title><style>${style}</style></head><body><main class="card"><h1>⚽ Join BL:R ${modeName}</h1><p>Target server ID:</p><code>${jobId}</code><a class="action" href="${links.direct}">Open exact server in Roblox</a>${mobileNote}<p>⚠️ Roblox may ignore the server ID and send you to a different server. If that happens, the Roblox client did not honor this request; Glutony cannot force the join.</p><p><small>This is an unofficial Glutony server link. No Roblox login, cookies, or passwords are needed here.</small></p></main></body></html>`;
+  return new Response(html, {headers: {'content-type':'text/html; charset=utf-8','cache-control':'no-store','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",'referrer-policy':'no-referrer','x-content-type-options':'nosniff'}});
 }
 
 const V2 = 1 << 15;
@@ -355,8 +386,8 @@ function listMessage(result, page, sort) {
   return v2Message([{type: 17, accent_color: 0x32c99a, components: children}, ...rows]);
 }
 
-function detailMessage(result, server, page, sort, headshots) {
-  const links = joinLinks(result.placeId, server.id);
+function detailMessage(result, server, page, sort, headshots, origin = '') {
+  const links = joinLinks(result.placeId, server.id, origin);
   const country = countryCode(server.details?.country);
   const flag = country ? `https://flagcdn.com/w80/${country.toLowerCase()}.png` : null;
   const fullRegion = server.region || 'Unknown region';
@@ -375,7 +406,7 @@ function detailMessage(result, server, page, sort, headshots) {
   } else {
     children.push(textPart('-# Player headshots unavailable from Roblox right now.'));
   }
-  children.push(textPart('-# Region, version and age via RoValra where available · Slots may change before joining'));
+  children.push(textPart('-# Region, version and age via RoValra where available · Slots may change before joining\n-# Roblox can ignore target instance IDs; join links are best-effort.'));
   // Discord Components V2 allows a thumbnail beside a section. Use the emoji
   // in the heading, plus the flag image when the country is known.
   if (flag) {
@@ -416,7 +447,7 @@ async function renderList(interaction, env, mode, page, sort, refresh) {
   }
 }
 
-async function renderDetail(interaction, env, mode, jobId, page, sort, refresh) {
+async function renderDetail(interaction, env, mode, jobId, page, sort, refresh, origin) {
   try {
     const result = await getServers(env, mode, refresh);
     const server = result.servers.find(s => s.id === jobId);
@@ -426,14 +457,14 @@ async function renderDetail(interaction, env, mode, jobId, page, sort, refresh) 
     }
     await attachDetails(result, [server], env);
     const headshots = await getPlayerHeadshots(server);
-    await editOriginal(interaction, detailMessage(result, server, page, sort, headshots));
+    await editOriginal(interaction, detailMessage(result, server, page, sort, headshots, origin));
   } catch (error) {
     console.error('Glutony detail failure:', error);
     await editOriginal(interaction, errorMessage('Could not load details', error?.message || 'Unknown error', `g:b:${mode}:${page}:${sort}`));
   }
 }
 
-async function onInteraction(interaction, env, ctx) {
+async function onInteraction(interaction, env, ctx, origin) {
   if (interaction.type === 1) return responseCallback(1);
   if (interaction.type === 2 && interaction.data?.name === 'blr') {
     const params = Object.fromEntries((interaction.data.options || []).map(v => [v.name, v.value]));
@@ -463,12 +494,12 @@ async function onInteraction(interaction, env, ctx) {
       const jobId = interaction.data?.values?.[0] || '';
       if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(jobId))
         return responseCallback(4, {content:'Invalid server selection.', flags:64});
-      ctx.waitUntil(renderDetail(interaction, env, select[1] || '8v8', jobId, Number(select[2]), select[3], false));
+      ctx.waitUntil(renderDetail(interaction, env, select[1] || '8v8', jobId, Number(select[2]), select[3], false, origin));
       return responseCallback(6);
     }
     const detail = /^g:d:(?:(8v8|pro):)?([0-9a-f-]{36}):(\d{1,3}):(players|space|ping)$/i.exec(id);
     if (detail) {
-      ctx.waitUntil(renderDetail(interaction, env, detail[1] || '8v8', detail[2], Number(detail[3]), detail[4], true));
+      ctx.waitUntil(renderDetail(interaction, env, detail[1] || '8v8', detail[2], Number(detail[3]), detail[4], true, origin));
       return responseCallback(6);
     }
     return responseCallback(4, {content:'This button is no longer supported. Run `/blr` again.', flags:64});
@@ -500,6 +531,7 @@ export default {
     if (request.method === 'GET' && pathname === '/') {
       return json({ bot: 'Glutony', status: 'online', mode: 'Cloudflare Workers', interaction_endpoint: '/interactions' });
     }
+    if (request.method === 'GET' && pathname === '/join') return joinLanding(request, env);
     if (request.method === 'POST' && pathname === '/admin/register') return registerCommand(request, env);
     if (request.method !== 'POST' || pathname !== '/interactions') return json({ error: 'Not found' }, 404);
     if (!env.DISCORD_PUBLIC_KEY) return json({ error: 'DISCORD_PUBLIC_KEY is not configured.' }, 500);
@@ -507,9 +539,9 @@ export default {
     if (!await verifyDiscord(request, rawBody, env.DISCORD_PUBLIC_KEY)) return json({ error: 'Invalid Discord signature.' }, 401);
     let interaction;
     try { interaction = JSON.parse(rawBody); } catch (_) { return json({ error: 'Malformed JSON' }, 400); }
-    try { return await onInteraction(interaction, env, ctx); }
+    try { return await onInteraction(interaction, env, ctx, new URL(request.url).origin); }
     catch (error) { console.error(error); return responseCallback(4, { content: 'An unexpected error occurred.', flags: 64 }); }
   },
 };
 
-export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, listMessage, detailMessage, pagedServers, getServers, attachDetails, locationFromDetail, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, getServers, attachDetails, locationFromDetail, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
