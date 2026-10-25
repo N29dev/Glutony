@@ -105,6 +105,9 @@ The public website at [blr.n29.kz/servers/](https://blr.n29.kz/servers/) uses th
 - `GET /api/servers?mode=8v8`
 - `GET /api/servers?mode=pro`
 - `GET /api/servers/avatars?mode=pro&id=<public-job-uuid>` (optional player preview images)
+- `GET /api/servers/regions?mode=8v8&ids=<comma-separated-Job-IDs>` — lightweight passive recheck for 1–8 active public instances; returns any newly known regions and metadata
+
+The website only retries **unknown** regions, approximately once every 75 seconds while open and visible, up to five background checks per page load. The Worker caches positive region details for 3 minutes; unknown locations for 45 seconds so newly available RoValra locations can appear without a manual page refresh. This is best-effort only: RoValra may not have a location for every public instance, so `Unknown region` can remain correct.
 - `GET /join?placeId=<place-id>&gameInstanceId=<public-job-uuid>&device=pc` (click-to-launch page)
 
 The server list responds with place ID, mode, scanned pages, update time and up to 60 public instances: Job ID, players, capacity, Roblox-reported ping, RoValra region/version/first-seen metadata when available, and PC/mobile links. **Never expose user tokens or Discord credentials.** Browsers are allowed to read this data only from the website origin `https://blr.n29.kz` using CORS.
