@@ -158,3 +158,16 @@ Glutony is an unofficial fan project; not affiliated with Roblox, Discord, RoVal
 - `wrangler.jsonc`: deployment config for existing `glutony`
 - `package.json`: Wrangler scripts
 - `test.mjs`: offline simulated-API checks
+
+
+## TikTok `/download` (optional)
+
+The `/download url:<TikTok video URL>` command sends a **real MP4 attachment**
+with mobile-friendly H.264 video, AAC audio, regenerated timestamps and MP4
+faststart (not merely a TikTok embed fix). It requires an external FFmpeg/
+yt-dlp media service; Cloudflare Workers cannot transcode videos themselves.
+
+See **[media-service/README.md](media-service/README.md)** for deployment,
+shared-secret configuration, upload limits and `/admin/register` steps.
+The existing `/blr` command is unchanged. Without the media service,
+`/download` responds with a configuration notice instead of pretending to work.
