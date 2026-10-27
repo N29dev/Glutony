@@ -107,7 +107,7 @@ def inspect_video(source: Path) -> None:
             capture_output=True, text=True, check=True, timeout=15,
         )
         duration = float(json.loads(result.stdout)["format"]["duration"])
-    except (subprocess.CalledProcessError, ValueError, KeyError, TimeoutError) as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError) as exc:
         raise VideoError("The downloaded file is not a valid video.") from exc
     if not 0 < duration <= MAX_DURATION_SECONDS:
         raise VideoError("Only videos up to five minutes are supported.")
@@ -183,8 +183,10 @@ def run_job(job: Job) -> None:
             edit_discord(job, f"❌ {exc}")
         except Exception:
             log.error("Failed to send video error to Discord")
-    except Exception:
-        log.exception("Unexpected video processing error (interaction token omitted)")
+    except Exception as exc:
+        # Avoid tracebacks from HTTP clients: exception strings can contain the
+        # webhook URL and therefore the secret Discord interaction token.
+        log.error("Unexpected video processing error: %s", type(exc).__name__)
         try:
             edit_discord(job, "❌ Could not process this TikTok video. Please try another link.")
         except Exception:
