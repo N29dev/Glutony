@@ -184,7 +184,7 @@ assert.equal(response.type,6);
 assert.ok(contains(lastEdit(),'BL:R Pro Servers'));
 
 response = await invoke({type:2,application_id:env.DISCORD_APPLICATION_ID,token:'customs',data:{name:'blr',options:[{name:'mode',value:'customs'}]}});
-assert.equal(response.type,4);
+assert.equal(response.type,5, 'Customs currently uses a deferred public reply');
 assert.equal((await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST'}),env,{})).status,403);
 const registeredResponse = await (await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST',headers:{authorization:'Bearer '+env.SETUP_KEY}}),env,{})).json();
 assert.equal(registeredResponse.registered,'blr');
