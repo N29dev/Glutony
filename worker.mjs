@@ -1,4 +1,5 @@
 import {customsInteraction, customsFetch} from './customs.mjs';
+import {DOWNLOAD_COMMAND, handleDownload} from './download.mjs';
 
 /**
  * Glutony — Discord user-installable Roblox 8v8 and Pro server browser on Cloudflare Workers.
@@ -485,6 +486,7 @@ async function onInteraction(interaction, env, ctx, origin) {
   if (interaction.type === 1) return responseCallback(1);
   if (interaction.type === 5 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
   if (interaction.type === 3 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
+  if (interaction.type === 2 && interaction.data?.name === 'download') return handleDownload(interaction, env, ctx);
   if (interaction.type === 2 && interaction.data?.name === 'blr') {
     const params = Object.fromEntries((interaction.data.options || []).map(v => [v.name, v.value]));
     if (params.mode === 'customs') return customsInteraction(interaction, env, ctx);
@@ -636,15 +638,31 @@ async function registerCommand(request, env) {
   if (!env.DISCORD_BOT_TOKEN || !/^\d{15,22}$/.test(String(env.DISCORD_APPLICATION_ID || ''))) {
     return json({ error: 'Configure DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID first.' }, 400);
   }
-  const response = await fetch(`${API}/applications/${env.DISCORD_APPLICATION_ID}/commands`, {
-    method: 'POST',
-    headers: { authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' },
-    body: JSON.stringify(COMMAND),
+  const registered = [];
+  for (const definition of [COMMAND, DOWNLOAD_COMMAND]) {
+    // POST upserts the named global command; preserves existing /blr registrations.
+    const response = await fetch(`${API}/applications/${env.DISCORD_APPLICATION_ID}/commands`, {
+      method: 'POST',
+      headers: { authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify(definition),
+    });
+    const body = await response.text();
+    if (!response.ok) return json({
+      error: `Discord rejected /${definition.name} registration`,
+      status: response.status,
+      detail: body.slice(0, 1200),
+      registered,
+    }, 502);
+    const command = JSON.parse(body);
+    registered.push({ name: definition.name, id: command.id });
+  }
+  return json({
+    ok: true,
+    registered: registered[0].name, // Keep old admin tooling compatible.
+    command_id: registered[0].id,
+    commands: registered,
+    user_install_enabled: true,
   });
-  const body = await response.text();
-  if (!response.ok) return json({ error: 'Discord rejected /blr registration', status: response.status, detail: body.slice(0, 1200) }, 502);
-  const command = JSON.parse(body);
-  return json({ ok: true, registered: command.name, command_id: command.id, user_install_enabled: true });
 }
 
 export default {
