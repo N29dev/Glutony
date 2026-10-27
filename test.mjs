@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import worker, { _test as helpers } from './worker.mjs';
+import { DOWNLOAD_COMMAND, cleanTikTokURL } from './download.mjs';
 
 const place8 = '124087144919678';
 const placePro = '99999183305180';
@@ -15,6 +16,8 @@ const env = {
   SETUP_KEY: 'local-test-secret-do-not-deploy',
   ROBLOX_MAX_PAGES: '1',
 };
+env.TIKTOK_SERVICE_URL = 'https://media.example';
+env.TIKTOK_SERVICE_TOKEN = 'test-video-secret';
 const calls = [];
 globalThis.fetch = async (url, options = {}) => {
   const address = String(url);
@@ -54,8 +57,12 @@ globalThis.fetch = async (url, options = {}) => {
     return Response.json({data: [{imageUrl:'https://tr.rbxcdn.com/example/150/150/AvatarHeadshot/Png'}]});
   }
   if (address.includes('/webhooks/')) return Response.json({id:'message'});
+  if (address === 'https://media.example/jobs') {
+    assert.equal(options.headers.authorization, 'Bearer test-video-secret');
+    return Response.json({queued:true}, {status:202});
+  }
   if (address.includes('/applications/') && address.includes('/commands')) {
-    return Response.json({name:'blr',id:'123456789012345678'});
+    return Response.json({name:JSON.parse(options.body).name,id:'123456789012345678'});
   }
   throw new Error('Unmocked request: '+address);
 };
@@ -81,6 +88,31 @@ const lastEdit = () => {
 const contains = (payload, word) => JSON.stringify(payload).includes(word);
 
 assert.deepEqual(await invoke({type:1}), {type:1}, 'Discord PING');
+assert.equal(DOWNLOAD_COMMAND.name, 'download');
+assert.ok(cleanTikTokURL('https://www.tiktok.com/@0nlyhunger/video/7701407832926637333'));
+assert.ok(cleanTikTokURL('https://vt.tiktok.com/Abc123/'));
+assert.equal(cleanTikTokURL('https://tiktok.com.evil.test/@x/video/123'), null);
+assert.equal(cleanTikTokURL('http://www.tiktok.com/@x/video/123'), null);
+assert.equal(cleanTikTokURL('https://www.tiktok.com/@x'), null);
+assert.equal(cleanTikTokURL('https://www.tiktok.com/@x/photo/123'), null);
+assert.equal(cleanTikTokURL('https://www.tiktok.com@127.0.0.1/@x/video/123'), null);
+let videoResp = await invoke({type:2,application_id:env.DISCORD_APPLICATION_ID,token:'download-token',
+  data:{name:'download',options:[{name:'url',value:'https://www.tiktok.com/@0nlyhunger/video/7701407832926637333?share=1'}]}});
+assert.equal(videoResp.type,5, 'TikTok should publicly defer its reply');
+const jobCall = calls.find(c=>c.address==='https://media.example/jobs');
+assert.ok(jobCall, 'TikTok job sent to separate processor');
+assert.equal(JSON.parse(jobCall.body).interaction_token,'download-token');
+assert.equal(JSON.parse(jobCall.body).url,'https://www.tiktok.com/@0nlyhunger/video/7701407832926637333');
+assert.ok(contains(lastEdit(),'Downloading'));
+videoResp = await invoke({type:2,application_id:env.DISCORD_APPLICATION_ID,token:'bad-video',
+  data:{name:'download',options:[{name:'url',value:'https://example.com/video'}]}});
+assert.equal(videoResp.type,4);
+assert.equal(videoResp.data.flags,64);
+delete env.TIKTOK_SERVICE_URL;
+videoResp = await invoke({type:2,application_id:env.DISCORD_APPLICATION_ID,token:'missing-service',
+  data:{name:'download',options:[{name:'url',value:'https://vt.tiktok.com/Abc123/'}]}});
+assert.equal(videoResp.type,4, 'Unconfigured service should fail privately');
+env.TIKTOK_SERVICE_URL = 'https://media.example';
 const invalid = await worker.fetch(new Request('https://glutony.example/interactions', {method:'POST',body:'{}'}),env,{});
 assert.equal(invalid.status,401,'Unsigned request must fail');
 assert.equal(helpers.config(env, '8v8').placeId,place8);
@@ -154,7 +186,9 @@ assert.ok(contains(lastEdit(),'BL:R Pro Servers'));
 response = await invoke({type:2,application_id:env.DISCORD_APPLICATION_ID,token:'customs',data:{name:'blr',options:[{name:'mode',value:'customs'}]}});
 assert.equal(response.type,4);
 assert.equal((await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST'}),env,{})).status,403);
-assert.equal((await (await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST',headers:{authorization:'Bearer '+env.SETUP_KEY}}),env,{})).json()).registered,'blr');
+const registeredResponse = await (await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST',headers:{authorization:'Bearer '+env.SETUP_KEY}}),env,{})).json();
+assert.equal(registeredResponse.registered,'blr');
+assert.deepEqual(registeredResponse.commands.map(c=>c.name),['blr','download']);
 
 // Browser-facing JSON API (used by blr.n29.kz/servers).
 const publicPro = await worker.fetch(new Request('https://glutony.example/api/servers?mode=pro',{headers:{origin:'https://blr.n29.kz'}}),env,{});
