@@ -24,6 +24,7 @@ export function cleanTikTokURL(input) {
     const host = url.hostname.toLowerCase();
     const regular = ['tiktok.com', 'www.tiktok.com', 'm.tiktok.com'].includes(host);
     const short = ['vm.tiktok.com', 'vt.tiktok.com'].includes(host);
+    if (!regular && !short) return null;
     if (short ? !/^\/[a-z0-9_-]+\/?$/i.test(url.pathname)
               : !(/^\/@[\w.]+\/video\/\d+\/?$/i.test(url.pathname) ||
                   /^\/t\/[a-z0-9_-]+\/?$/i.test(url.pathname))) return null;
