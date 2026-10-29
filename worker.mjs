@@ -1,5 +1,6 @@
 import {customsInteraction, customsFetch} from './customs.mjs';
 import {DOWNLOAD_COMMAND, handleDownload} from './download.mjs';
+import {STATS_COMMAND, recordStats, botStatsMessage, serverStatsMessage} from './stats.mjs';
 
 /**
  * Glutony — Discord user-installable Roblox 8v8 and Pro server browser on Cloudflare Workers.
@@ -482,10 +483,32 @@ async function renderDetail(interaction, env, mode, jobId, page, sort, refresh, 
   }
 }
 
+async function renderStats(interaction, env, view) {
+  let message;
+  try {
+    if (view === 'bot') {
+      message = await botStatsMessage(env);
+    } else {
+      message = serverStatsMessage(await getServers(env, view));
+    }
+  } catch (error) {
+    console.warn('Glutony stats render failed:', String(error));
+    message = 'Could not load statistics. Please try again later.';
+  }
+  await editOriginal(interaction, {content: message, allowed_mentions: {parse: []}});
+}
+
 async function onInteraction(interaction, env, ctx, origin) {
   if (interaction.type === 1) return responseCallback(1);
   if (interaction.type === 5 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
   if (interaction.type === 3 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
+  if (interaction.type === 2 && interaction.data?.name === 'stats') {
+    const view = (interaction.data?.options || []).find(option => option.name === 'view')?.value || 'bot';
+    if (!['bot', '8v8', 'pro', 'main'].includes(view))
+      return responseCallback(4, {content: 'Unknown statistics view.', flags: 64});
+    ctx.waitUntil(renderStats(interaction, env, view));
+    return responseCallback(5, {flags: 64}); // Stats are private to the requester.
+  }
   if (interaction.type === 2 && interaction.data?.name === 'download') return handleDownload(interaction, env, ctx);
   if (interaction.type === 2 && interaction.data?.name === 'blr') {
     const params = Object.fromEntries((interaction.data.options || []).map(v => [v.name, v.value]));
@@ -639,7 +662,7 @@ async function registerCommand(request, env) {
     return json({ error: 'Configure DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID first.' }, 400);
   }
   const registered = [];
-  for (const definition of [COMMAND, DOWNLOAD_COMMAND]) {
+  for (const definition of [COMMAND, DOWNLOAD_COMMAND, STATS_COMMAND]) {
     // POST upserts the named global command; preserves existing /blr registrations.
     const response = await fetch(`${API}/applications/${env.DISCORD_APPLICATION_ID}/commands`, {
       method: 'POST',
@@ -687,6 +710,10 @@ export default {
     if (!await verifyDiscord(request, rawBody, env.DISCORD_PUBLIC_KEY)) return json({ error: 'Invalid Discord signature.' }, 401);
     let interaction;
     try { interaction = JSON.parse(rawBody); } catch (_) { return json({ error: 'Malformed JSON' }, 400); }
+    // Discord signature already verified: only then record anonymous usage counts.
+    if (interaction.type === 2 && ['blr', 'download', 'stats'].includes(interaction.data?.name)) {
+      ctx.waitUntil(recordStats(env, interaction));
+    }
     try { return await onInteraction(interaction, env, ctx, new URL(request.url).origin); }
     catch (error) { console.error(error); return responseCallback(4, { content: 'An unexpected error occurred.', flags: 64 }); }
   },

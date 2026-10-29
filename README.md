@@ -2,6 +2,21 @@
 
 A Discord **user-installable** slash-command app for browsing **Blue Lock: Rivals** public servers. Hosted on **Cloudflare Workers** (no always-on bot process needed).
 
+## Statistics command (new)
+
+- `/stats` is a **private** Discord command (ephemeral, visible only to the person running it). Default view tracks command usage for Glutony: **all-time and past-7-UTC-day command counts**, **distinct users and guilds in the past 7 days**, command breakdown and `/blr` mode breakdown.
+- `/stats view:8v8`, `/stats view:pro` and `/stats view:main` show **live sampled server activity**: joinable sampled server count, players, free slots, occupancy and average Roblox-reported ping. Samples exclude full servers and unscanned API pages; they are **not** global player counts.
+- Command tracking runs only after verifying Discord's signature. No raw user IDs, guild IDs, message content, TikTok URLs, or IP addresses are stored by the analytics code. Daily unique users/guilds are HMAC-pseudonymized with the existing Cloudflare `SETUP_KEY` secret (or optional `STATS_HASH_KEY`). Without a secret, command counts still work, but unique IDs are not collected.
+- Tracking starts **only after deployment**. Previous Cloudflare log history cannot be backfilled by this feature. Component-button clicks are not included in command counts.
+- The existing `CUSTOMS_DB` D1 binding is reused. **Before enabling this branch**, apply the new migration to the production D1 database:
+
+```bash
+npx wrangler d1 migrations apply glutony-customs --remote
+```
+
+- Deploy the Worker and re-register slash commands using the existing authorized `POST /admin/register` endpoint. The registration now includes `/stats` alongside `/blr` and `/download`. Changing `/stats` options later also requires registration.
+- Daily aggregates persist. Individual interaction IDs are kept only for retry deduplication (normally 14 days) and anonymous daily unique entries are pruned after 30 days. These cleanup jobs run opportunistically when new commands arrive, not via a scheduled cron.
+
 ## Main lobby and interactive globe
 
 - The public BL:R root place `18668065416` is now available as `/api/servers?mode=main` and website tab **Main**, and can be selected through Discord `/blr mode:main` after command re-registration.
