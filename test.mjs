@@ -119,6 +119,17 @@ assert.equal(helpers.config(env, '8v8').placeId,place8);
 assert.equal(helpers.config(env, 'pro').placeId,placePro);
 assert.equal(helpers.config(env, 'main').placeId,placeMain);
 assert.equal(helpers.config(env, 'main').pages,1,'Main always uses one Roblox API page');
+let statsReply = await invoke({type:2, id:'1563900000000000001', application_id:env.DISCORD_APPLICATION_ID,
+  token:'bot-stats', user:{id:'1563900000000000002'},data:{name:'stats'}});
+assert.equal(statsReply.type,5);
+assert.equal(statsReply.data.flags,64,'Stats response should be ephemeral');
+assert.ok(contains(lastEdit(),'database is not configured'));
+statsReply = await invoke({type:2, id:'1563900000000000003', application_id:env.DISCORD_APPLICATION_ID,
+  token:'pro-stats', data:{name:'stats',options:[{name:'view',value:'pro'}]}});
+assert.equal(statsReply.type,5);
+assert.ok(contains(lastEdit(),'Players in sample'));
+assert.ok(contains(lastEdit(),'7'));
+assert.ok(contains(lastEdit(),'not a global player count'));
 const spread=helpers.sampleSpread(Array.from({length:300},(_,i)=>i),60);
 assert.equal(spread.length,60,'60 globe/list candidates sampled across scanned pages');
 assert.ok(spread[0]<5&&spread.at(-1)>290,'Spread includes first and last page');
@@ -188,7 +199,7 @@ assert.equal(response.type,5, 'Customs currently uses a deferred public reply');
 assert.equal((await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST'}),env,{})).status,403);
 const registeredResponse = await (await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST',headers:{authorization:'Bearer '+env.SETUP_KEY}}),env,{})).json();
 assert.equal(registeredResponse.registered,'blr');
-assert.deepEqual(registeredResponse.commands.map(c=>c.name),['blr','download']);
+assert.deepEqual(registeredResponse.commands.map(c=>c.name),['blr','download','stats']);
 
 // Browser-facing JSON API (used by blr.n29.kz/servers).
 const publicPro = await worker.fetch(new Request('https://glutony.example/api/servers?mode=pro',{headers:{origin:'https://blr.n29.kz'}}),env,{});
