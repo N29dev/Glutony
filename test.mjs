@@ -89,6 +89,16 @@ const contains = (payload, word) => JSON.stringify(payload).includes(word);
 
 assert.deepEqual(await invoke({type:1}), {type:1}, 'Discord PING');
 assert.equal(DOWNLOAD_COMMAND.name, 'download');
+const about = await invoke({type:2,id:'1563900000000000100', application_id:env.DISCORD_APPLICATION_ID,
+  token:'about-glutony', data:{name:'info'}});
+assert.equal(about.type,4,'/info responds immediately');
+assert.equal(about.data.flags,32768,'/info uses Components V2 and is public');
+assert.deepEqual(about.data.allowed_mentions,{parse:[]},'Creator mention must not ping');
+assert.ok(contains(about.data,'1479778096834941099'));
+assert.ok(contains(about.data,'https://discord.com/users/1479778096834941099'));
+assert.ok(contains(about.data,'https://blr.n29.kz/servers/'));
+assert.ok(contains(about.data,'https://github.com/N29dev/Glutony'));
+assert.ok(contains(about.data,'/stats'));
 assert.ok(cleanTikTokURL('https://www.tiktok.com/@0nlyhunger/video/7701407832926637333'));
 assert.ok(cleanTikTokURL('https://vt.tiktok.com/Abc123/'));
 assert.equal(cleanTikTokURL('https://tiktok.com.evil.test/@x/video/123'), null);
@@ -199,7 +209,7 @@ assert.equal(response.type,5, 'Customs currently uses a deferred public reply');
 assert.equal((await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST'}),env,{})).status,403);
 const registeredResponse = await (await worker.fetch(new Request('https://glutony.example/admin/register',{method:'POST',headers:{authorization:'Bearer '+env.SETUP_KEY}}),env,{})).json();
 assert.equal(registeredResponse.registered,'blr');
-assert.deepEqual(registeredResponse.commands.map(c=>c.name),['blr','download','stats']);
+assert.deepEqual(registeredResponse.commands.map(c=>c.name),['blr','download','stats','info']);
 
 // Browser-facing JSON API (used by blr.n29.kz/servers).
 const publicPro = await worker.fetch(new Request('https://glutony.example/api/servers?mode=pro',{headers:{origin:'https://blr.n29.kz'}}),env,{});
