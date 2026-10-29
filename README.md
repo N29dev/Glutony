@@ -2,6 +2,13 @@
 
 A Discord **user-installable** slash-command app for browsing **Blue Lock: Rivals** public servers. Hosted on **Cloudflare Workers** (no always-on bot process needed).
 
+## About command
+
+- `/info` shows a public Discord Components V2 project card with developer **N29**, Discord ID `1479778096834941099` and a Discord profile link.
+- The card summarizes Glutony's features and commands and offers links to the [server browser](https://blr.n29.kz/servers/) and [source code](https://github.com/N29dev/Glutony).
+- The command runs without D1 access or external API calls. It uses an allowed-mentions restriction to avoid pinging the developer.
+- Re-run your existing authenticated `POST /admin/register` endpoint after deployment to add `/info` to the slash-command menu.
+
 ## Statistics command (new)
 
 - `/stats` is a **private** Discord command (ephemeral, visible only to the person running it). Default view tracks command usage for Glutony: **all-time and past-7-UTC-day command counts**, **distinct users and guilds in the past 7 days**, command breakdown and `/blr` mode breakdown.
