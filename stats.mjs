@@ -21,7 +21,7 @@ export const STATS_COMMAND = {
 };
 
 const DAY_MS = 86_400_000;
-const KNOWN_COMMANDS = new Set(['blr', 'download', 'stats']);
+const KNOWN_COMMANDS = new Set(['blr', 'download', 'stats', 'info']);
 const KNOWN_MODES = new Set(['8v8', 'pro', 'main', 'customs']);
 const number = v => Number(v || 0).toLocaleString('en-US');
 const dayAt = ms => new Date(ms).toISOString().slice(0, 10);
@@ -127,7 +127,7 @@ export async function botStatsMessage(env, now = Date.now()) {
       `**Unique users:** ${number(users?.n)} · **Unique servers:** ${number(guilds?.n)}`,
       '',
       '**Command breakdown**',
-      `/blr: **${number(used('blr'))}** · /download: **${number(used('download'))}** · /stats: **${number(used('stats'))}**`,
+      `/blr: **${number(used('blr'))}** · /download: **${number(used('download'))}** · /stats: **${number(used('stats'))}** · /info: **${number(used('info'))}**`,
       '',
       '**/blr mode breakdown**',
       modeLine,
