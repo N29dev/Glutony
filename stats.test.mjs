@@ -93,14 +93,16 @@ assert.ok(![...db.uniques].some(key=>key.includes(actor)||key.includes(server)),
 await recordStats(env,{type:2,id:'1555555555555555501',data:{name:'download'},member:{user:{id:actor}},guild_id:server});
 await recordStats(env,{type:2,id:'1555555555555555502',data:{name:'blr',options:[{name:'mode',value:'8v8'}]},user:{id:'1444444444444444401'}});
 await recordStats(env,{type:2,id:'1555555555555555503',data:{name:'stats'},user:{id:actor}});
+await recordStats(env,{type:2,id:'1555555555555555506',data:{name:'info'},user:{id:actor}});
 await recordStats(env,{type:3,id:'1555555555555555504',data:{custom_id:'g:p:pro:0:players'},user:{id:actor}});
-assert.equal(db.daily.size,4,'Only slash commands are tracked, not component clicks');
+assert.equal(db.daily.size,5,'Only slash commands are tracked, not component clicks');
 
 const message = await botStatsMessage(env);
-assert.ok(message.includes('4 this week · 4 all time'), message);
+assert.ok(message.includes('5 this week · 5 all time'), message);
 assert.ok(message.includes('Unique users:** 2'), message);
 assert.ok(message.includes('Unique servers:** 1'), message);
 assert.ok(message.includes('/blr: **2**'), message);
+assert.ok(message.includes('/info: **1**'), message);
 assert.ok(message.includes('Pro: **1**'), message);
 assert.ok(message.includes('8v8: **1**'), message);
 

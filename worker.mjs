@@ -1,6 +1,7 @@
 import {customsInteraction, customsFetch} from './customs.mjs';
 import {DOWNLOAD_COMMAND, handleDownload} from './download.mjs';
 import {STATS_COMMAND, recordStats, botStatsMessage, serverStatsMessage} from './stats.mjs';
+import {INFO_COMMAND, infoMessage} from './info.mjs';
 
 /**
  * Glutony — Discord user-installable Roblox 8v8 and Pro server browser on Cloudflare Workers.
@@ -502,6 +503,9 @@ async function onInteraction(interaction, env, ctx, origin) {
   if (interaction.type === 1) return responseCallback(1);
   if (interaction.type === 5 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
   if (interaction.type === 3 && String(interaction.data?.custom_id||'').startsWith('c:')) return customsInteraction(interaction, env, ctx);
+  if (interaction.type === 2 && interaction.data?.name === 'info') {
+    return responseCallback(4, infoMessage()); // Public, no external requests needed.
+  }
   if (interaction.type === 2 && interaction.data?.name === 'stats') {
     const view = (interaction.data?.options || []).find(option => option.name === 'view')?.value || 'bot';
     if (!['bot', '8v8', 'pro', 'main'].includes(view))
@@ -662,7 +666,7 @@ async function registerCommand(request, env) {
     return json({ error: 'Configure DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID first.' }, 400);
   }
   const registered = [];
-  for (const definition of [COMMAND, DOWNLOAD_COMMAND, STATS_COMMAND]) {
+  for (const definition of [COMMAND, DOWNLOAD_COMMAND, STATS_COMMAND, INFO_COMMAND]) {
     // POST upserts the named global command; preserves existing /blr registrations.
     const response = await fetch(`${API}/applications/${env.DISCORD_APPLICATION_ID}/commands`, {
       method: 'POST',
@@ -711,7 +715,7 @@ export default {
     let interaction;
     try { interaction = JSON.parse(rawBody); } catch (_) { return json({ error: 'Malformed JSON' }, 400); }
     // Discord signature already verified: only then record anonymous usage counts.
-    if (interaction.type === 2 && ['blr', 'download', 'stats'].includes(interaction.data?.name)) {
+    if (interaction.type === 2 && ['blr', 'download', 'stats', 'info'].includes(interaction.data?.name)) {
       ctx.waitUntil(recordStats(env, interaction));
     }
     try { return await onInteraction(interaction, env, ctx, new URL(request.url).origin); }
