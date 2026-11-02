@@ -184,6 +184,44 @@ A separate, **non-production** [Chrome region observer](tools/region-observer/RE
 
 This is **not** a background Roblox bot or a Cloudflare feature. It does not upload credentials, extract browser cookies, or change existing Glutony API routes. See its README for testing and policy limitations.
 
+## BL:R tech rules admin editor
+
+The static public website at [blr.n29.kz/tech/](https://blr.n29.kz/tech/) shows the source moderation list compiled by N29 and loads **only admin overrides** from Glutony's D1 database. The public page still shows the original snapshot if the API is temporarily unavailable.
+
+The private editor lives at [blr.n29.kz/tech/admin/](https://blr.n29.kz/tech/admin/). It allows N29 to create, edit, reclassify, add a YouTube video to, or hide an entry. New style names entered with a tech also appear in the public directory. Changes do **not** require a GitHub commit.
+
+### One-time setup
+
+1. **Before using admin edits**, apply the new existing-D1 migration:
+
+```bash
+npx wrangler d1 migrations apply glutony-customs --remote
+```
+
+   This creates only the new `tech_overrides` table. Existing customs, analytics, and Discord data stay unchanged.
+
+2. Configure a **separate, random** `TECH_ADMIN_KEY` (at least 32 characters) in **Cloudflare → Workers & Pages → glutony → Settings → Variables and Secrets** as a **Secret**. Do **not** use your Discord `SETUP_KEY` or Roblox credentials. To generate one locally:
+
+```bash
+openssl rand -base64 36
+```
+
+   Copy the generated value only into the Cloudflare Secret and your admin panel's password field; **never share the value in chat, screenshots, or GitHub**. Cloudflare also supports `npx wrangler secret put TECH_ADMIN_KEY` from your authorized local project.
+
+3. Deploy/redeploy `N29dev/Glutony` main via the existing Cloudflare GitHub integration, then open `https://blr.n29.kz/tech/admin/`. Paste the same key and choose **Connect**.
+
+**Endpoint behavior:** `GET /api/tech` returns only the public additions/overrides/tombstones (no secrets). `GET /api/tech/admin/session` verifies the key; `PUT /api/tech/admin/entry/{id}` creates/updates; `DELETE /api/tech/admin/entry/{id}` hides. Admin requests require the separate secret as a Bearer token, CORS is restricted to `https://blr.n29.kz`, and all edits are validated. The admin key stays only in the currently open browser tab's JavaScript memory; refreshing or closing the page locks the editor again. The server does not return your key or other secrets.
+
+The static original policy snapshot remains in `N29dev/blr/tech/data.js`. Removing an original listing with the admin editor stores a tombstone; it does not rewrite or destroy the original source file. The official moderation FAQ may change: keep the manually curated entries synchronized and never treat unlisted techniques as automatically permitted.
+
+### Safety and limits
+
+- The admin URL is **not** secure merely because it's separate; access is enforced on the Worker with `TECH_ADMIN_KEY`.
+- The page intentionally does not request GitHub, Roblox, or Discord authentication.
+- This is a manually curated unofficial index, not an automated moderation rules feed.
+- A missing migration/database or missing admin secret disables editing but does **not** affect server finder or Discord commands.
+- Admin edits are not shared to Roblox or RoValra.
+
 ## Files
 
 - `worker.mjs`: Cloudflare Worker HTTP interactions handler
