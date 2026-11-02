@@ -293,6 +293,7 @@ function applyDetail(server, data, missingReason='no_server_record') {
   // Public, bounded reason code: never expose datacenter IDs, IPs, or raw errors.
   server.regionDiagnostic=data?.regionDiagnostic || (data?.location?'resolved':'no_datacenter_id');
   if (!data) {
+    server.region=null;
     server.regionDiagnostic=missingReason;
     return;
   }
