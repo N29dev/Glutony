@@ -7,6 +7,7 @@
 import { chromium } from 'playwright';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const DEFAULT_PROFILE = join(homedir(), '.glutony-alt-region-profile');
 const GAMEJOIN_URL = 'https://gamejoin.roblox.com/v2/join-game-instance';
@@ -31,12 +32,12 @@ function parseArgs(args) {
   }
   return {expected,profile,help:false};
 }
-function normalizeDatacenter(value){
+export function normalizeDatacenter(value){
   if(typeof value==='number'&&Number.isSafeInteger(value)&&value>=0)return String(value);
   if(typeof value==='string'&&/^\d{1,20}$/.test(value.trim()))return value.trim();
   return null;
 }
-function pickRegion(items, id) {
+export function pickRegion(items, id) {
   if(!Array.isArray(items)||!id)return null;
   let match=null, ambiguous=false;
   for(const item of items.slice(0,3000)){
@@ -132,7 +133,9 @@ async function main(){
     });
   }
 }
-main().catch(error=>{
-  console.error('Region observer could not start:',error?.message||'Unknown error');
-  process.exitCode=1;
-});
+if (process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
+  main().catch(error=>{
+    console.error('Region observer could not start:',error?.message||'Unknown error');
+    process.exitCode=1;
+  });
+}
