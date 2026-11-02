@@ -7,3 +7,7 @@ node_modules/
 .wrangler/
 .DS_Store
 *.log
+
+# Never commit local Chrome sessions, even when using a custom diagnostic profile
+.glutony-alt-region-profile/
+tools/region-observer/profile/

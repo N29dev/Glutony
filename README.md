@@ -178,6 +178,12 @@ Discord servers can restrict public responses from user-installed apps with the 
 
 Glutony is an unofficial fan project; not affiliated with Roblox, Discord, RoValra, or Blue Lock: Rivals. This project never needs another user's Roblox password, session cookie, or Discord authorization.
 
+## Experimental alt-account region check (manual only)
+
+A separate, **non-production** [Chrome region observer](tools/region-observer/README.md) can inspect one human-initiated Roblox join response in an isolated alt-account Chrome profile, then resolve its datacenter through RoValra's public map.
+
+This is **not** a background Roblox bot or a Cloudflare feature. It does not upload credentials, extract browser cookies, or change existing Glutony API routes. See its README for testing and policy limitations.
+
 ## Files
 
 - `worker.mjs`: Cloudflare Worker HTTP interactions handler
