@@ -26,6 +26,7 @@ const PAGE_SIZE = 4;
 const SOFT_CACHE_MS = 35_000;
 const memoryCaches = new Map(); // Mode + Place ID -> most recent public server list
 const detailCache = new Map(); // Place ID + Job ID -> { details, expiry }; isolate-local, best effort
+const datacenterCache = {at:0, map:null, pending:null}; // Optional public location map, best effort
 
 const COMMAND = {
   name: 'blr',
@@ -206,6 +207,71 @@ function flagEmoji(code) {
   if (!code || !/^[A-Z]{2}$/.test(code)) return '🌐';
   return String.fromCodePoint(...[...code].map(c => 127397 + c.charCodeAt(0)));
 }
+// Optional fallback matching RoValra's own datacenter-ID lookup.
+function datacenterKey(value) {
+  const key=typeof value==='string'?value.trim():Number.isSafeInteger(value)&&value>=0?String(value):'';
+  return /^[a-z0-9_-]{1,64}$/i.test(key)?key:null;
+}
+function knownLocation(value){
+  const part=safeLocationPart(value);
+  return /^(unknown|n\/a|none|null|not available)$/i.test(part)?'':part;
+}
+async function rovalraDatacenters(){
+  if(datacenterCache.map&&Date.now()-datacenterCache.at<600_000)return datacenterCache.map;
+  if(datacenterCache.pending)return datacenterCache.pending;
+  const p=(async()=>{
+    try{
+      const resp=await fetch('https://apis.rovalra.com/v1/datacenters/list',{
+        headers:{accept:'application/json'},signal:AbortSignal.timeout(3000)
+      });
+      if(!resp.ok)throw Error('HTTP '+resp.status);
+      const items=await resp.json();
+      if(!Array.isArray(items))throw Error('Invalid datacenter response');
+      const map=new Map();
+      for(const item of items.slice(0,3000)){
+        const location=item?.location;
+        const code=countryCode(location?.country);
+        if(!code)continue;
+        const detail={
+          city:knownLocation(location?.city),
+          region:knownLocation(location?.region),
+          country:countryNames[code]||knownLocation(location?.country)
+        };
+        const ids=Array.isArray(item?.dataCenterIds)?item.dataCenterIds:[];
+        for(const raw of ids.slice(0,200)){
+          const id=datacenterKey(raw);
+          if(!id)continue;
+          if(map.has(id)){
+            if(JSON.stringify(map.get(id))!==JSON.stringify(detail))map.set(id,null);
+          }else map.set(id,detail);
+        }
+      }
+      datacenterCache.map=map;datacenterCache.at=Date.now();
+      return map;
+    }catch(err){
+      console.warn('Optional RoValra datacenter fallback unavailable:',String(err?.message||err));
+      return datacenterCache.map||new Map();
+    }
+  })();
+  datacenterCache.pending=p;
+  try{return await p;}finally{if(datacenterCache.pending===p)datacenterCache.pending=null;}
+}
+async function enrichMissingDatacenterDetails(found){
+  const pending=[...found.values()].filter(d=>d&&!d.location&&datacenterKey(d.datacenterId));
+  if(!pending.length)return 0;
+  const map=await rovalraDatacenters();let count=0;
+  for(const details of pending){
+    const loc=map.get(datacenterKey(details.datacenterId));
+    if(!loc)continue;
+    details.city=knownLocation(details.city)||loc.city;
+    details.region=knownLocation(details.region)||loc.region;
+    details.country=knownLocation(details.country)||loc.country;
+    details.location=locationFromDetail(details);
+    if(details.location)count++;
+  }
+  return count;
+}
+
 function shortLocation(server) {
   const d = server.details || {};
   const city = safeLocationPart(d.city);
@@ -247,11 +313,13 @@ async function attachDetails(result, servers, env) {
       const firstSeen = typeof entry.first_seen === 'string' ? entry.first_seen.slice(0, 40) : null;
       found.set(entry.server_id, {
         location: locationFromDetail(entry),
-        city: safeLocationPart(entry.city), region: safeLocationPart(entry.region), country: safeLocationPart(entry.country),
+        city: knownLocation(entry.city), region: knownLocation(entry.region), country: knownLocation(entry.country),
+        datacenterId: datacenterKey(entry.datacenter_id ?? entry.datacenterId),
         version: Number.isInteger(version) && version > 0 && version < 1e9 ? version : null,
         firstSeen,
       });
     }
+    await enrichMissingDatacenterDetails(found);
     for (const server of missing) {
       const details = found.get(server.id) || null;
       applyDetail(server, details);
@@ -723,4 +791,4 @@ export default {
   },
 };
 
-export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, attachDetails, locationFromDetail, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
