@@ -42,6 +42,12 @@ globalThis.fetch = async (url, options = {}) => {
       playerTokens: ['preview1'],
     }], nextPageCursor: null});
   }
+  if (address.includes('/v1/datacenters/list')) {
+    return Response.json([
+      {dataCenterIds:[42,43], location:{city:'Frankfurt',region:'Hesse',country:'DE',latLong:[50.11,8.68]}},
+      {dataCenterIds:[99], location:{city:'Singapore',region:'',country:'SG',latLong:[1.35,103.8]}}
+    ]);
+  }
   if (address.includes('apis.rovalra.com')) {
     const pro = address.includes(placePro);
     return Response.json({status: 'success', servers: [{
@@ -259,6 +265,27 @@ const inactiveResp = await worker.fetch(new Request(
 assert.deepEqual((await inactiveResp.json()).regions,{});
 assert.equal((await worker.fetch(new Request(
   'https://glutony.example/api/servers/regions?mode=pro&ids='+Array(9).fill(serverPro).join(',')),env,{})).status,400);
+
+// RoValra may supply a datacenter ID while city/country remain unresolved.
+// Use the public datacenter map, without guessing based on ping or user data.
+assert.equal(helpers.datacenterKey(42),'42');
+assert.equal(helpers.datacenterKey(' 42 '),'42');
+assert.equal(helpers.datacenterKey('invalid id with spaces'),null);
+const fallbackDetails=new Map([
+  ['unresolved',{datacenterId:'42',location:null,city:'',region:'',country:''}],
+  ['absent',{datacenterId:null,location:null,city:'',region:'',country:''}],
+  ['unmapped',{datacenterId:'98765',location:null,city:'',region:'',country:''}]
+]);
+const enrichedCount=await helpers.enrichMissingDatacenterDetails(fallbackDetails);
+assert.equal(enrichedCount,1,'Only exact known datacenter IDs may gain a location');
+assert.equal(fallbackDetails.get('unresolved').location,'Frankfurt, Hesse, Germany');
+assert.equal(fallbackDetails.get('unresolved').country,'Germany');
+assert.equal(fallbackDetails.get('absent').location,null,'Missing datacenter IDs must remain unresolved');
+assert.equal(fallbackDetails.get('unmapped').location,null,'Unmapped datacenters must not be guessed');
+assert.equal(calls.filter(c=>c.address.includes('/v1/datacenters/list')).length,1,'Lookup is cached');
+await helpers.enrichMissingDatacenterDetails(new Map([['again',{datacenterId:'43',location:null,city:'',region:'',country:''}]]));
+assert.equal(calls.filter(c=>c.address.includes('/v1/datacenters/list')).length,1,'Repeated lookups reuse the public map');
+console.log('PASS: RoValra datacenter mapping is conservative, cached, and optional');
 
 console.log('PASS: passive region refresh validates server IDs, CORS, and known server metadata');
 
