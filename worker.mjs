@@ -26,7 +26,7 @@ const PAGE_SIZE = 4;
 const SOFT_CACHE_MS = 35_000;
 const memoryCaches = new Map(); // Mode + Place ID -> most recent public server list
 const detailCache = new Map(); // Place ID + Job ID -> { details, expiry }; isolate-local, best effort
-const datacenterCache = {at:0, map:null, pending:null}; // Optional public location map, best effort
+const datacenterCache = {at:0, map:null, pending:null, lastLookupFailed:false}; // Optional public location map, best effort
 
 const COMMAND = {
   name: 'blr',
@@ -246,9 +246,10 @@ async function rovalraDatacenters(){
           }else map.set(id,detail);
         }
       }
-      datacenterCache.map=map;datacenterCache.at=Date.now();
+      datacenterCache.map=map;datacenterCache.at=Date.now();datacenterCache.lastLookupFailed=false;
       return map;
     }catch(err){
+      datacenterCache.lastLookupFailed=true;
       console.warn('Optional RoValra datacenter fallback unavailable:',String(err?.message||err));
       return datacenterCache.map||new Map();
     }
@@ -262,12 +263,18 @@ async function enrichMissingDatacenterDetails(found){
   const map=await rovalraDatacenters();let count=0;
   for(const details of pending){
     const loc=map.get(datacenterKey(details.datacenterId));
-    if(!loc)continue;
+    if(!loc) {
+      details.regionDiagnostic=datacenterCache.lastLookupFailed?'datacenter_lookup_failed':'datacenter_unmapped';
+      continue;
+    }
     details.city=knownLocation(details.city)||loc.city;
     details.region=knownLocation(details.region)||loc.region;
     details.country=knownLocation(details.country)||loc.country;
     details.location=locationFromDetail(details);
-    if(details.location)count++;
+    if(details.location) {
+      details.regionDiagnostic='resolved_datacenter';
+      count++;
+    }
   }
   return count;
 }
@@ -282,19 +289,27 @@ function shortLocation(server) {
 }
 function regionFlag(server) { return flagEmoji(countryCode(server.details?.country)); }
 
-function applyDetail(server, data) {
-  if (!data) return;
+function applyDetail(server, data, missingReason='no_server_record') {
+  // Public, bounded reason code: never expose datacenter IDs, IPs, or raw errors.
+  server.regionDiagnostic=data?.regionDiagnostic || (data?.location?'resolved':'no_datacenter_id');
+  if (!data) {
+    server.regionDiagnostic=missingReason;
+    return;
+  }
   server.details = { ...data };
   server.region = data.location || null;
 }
 
 async function attachDetails(result, servers, env) {
-  if (String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() === 'false') return;
+  if (String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() === 'false') {
+    for (const server of servers) server.regionDiagnostic='disabled';
+    return;
+  }
   const now = Date.now();
   const missing = [];
   for (const server of servers) {
     const cached = detailCache.get(`${result.placeId}:${server.id}`);
-    if (cached && cached.expiry > now) applyDetail(server, cached.details);
+    if (cached && cached.expiry > now) applyDetail(server, cached.details, cached.reason || 'no_server_record');
     else missing.push(server);
   }
   if (!missing.length) return;
@@ -311,10 +326,13 @@ async function attachDetails(result, servers, env) {
       if (typeof entry?.server_id !== 'string') continue;
       const version = Number(entry.place_version);
       const firstSeen = typeof entry.first_seen === 'string' ? entry.first_seen.slice(0, 40) : null;
+      const location=locationFromDetail(entry);
+      const datacenterId=datacenterKey(entry.datacenter_id ?? entry.datacenterId);
       found.set(entry.server_id, {
-        location: locationFromDetail(entry),
+        location,
         city: knownLocation(entry.city), region: knownLocation(entry.region), country: knownLocation(entry.country),
-        datacenterId: datacenterKey(entry.datacenter_id ?? entry.datacenterId),
+        datacenterId,
+        regionDiagnostic:location?'resolved':datacenterId?'datacenter_unmapped':'no_datacenter_id',
         version: Number.isInteger(version) && version > 0 && version < 1e9 ? version : null,
         firstSeen,
       });
@@ -322,15 +340,18 @@ async function attachDetails(result, servers, env) {
     await enrichMissingDatacenterDetails(found);
     for (const server of missing) {
       const details = found.get(server.id) || null;
-      applyDetail(server, details);
+      applyDetail(server, details, 'no_server_record');
       // Server metadata may arrive before RoValra learns its location. Retry missing
       // regions sooner, even when version and first_seen are already present.
       const lifetime = details?.location ? 180_000 : 45_000;
-      detailCache.set(`${result.placeId}:${server.id}`, {details, expiry: now + lifetime});
+      detailCache.set(`${result.placeId}:${server.id}`, {details, reason:details?.regionDiagnostic||'no_server_record', expiry: now + lifetime});
     }
   } catch (err) {
     console.warn('Optional RoValra details failed:', String(err?.message || err));
-    for (const server of missing) detailCache.set(`${result.placeId}:${server.id}`, {details: null, expiry: now + 30_000});
+    for (const server of missing) {
+      applyDetail(server, null, 'rovalra_error');
+      detailCache.set(`${result.placeId}:${server.id}`, {details:null, reason:'rovalra_error', expiry:now + 30_000});
+    }
   }
   if (detailCache.size > 800) detailCache.clear();
 }
@@ -651,6 +672,7 @@ async function websiteServers(request, env) {
       city: s.details?.city || null, state: s.details?.region || null,
       country: s.details?.country || null,
       countryCode: countryCode(s.details?.country),
+      regionDiagnostic: s.regionDiagnostic || (s.region?'resolved':'not_checked'),
       version: s.details?.version ?? null,
       firstSeen: s.details?.firstSeen ?? null,
       // Join links lead to a click-to-launch page, not broken Roblox web matchmaking.
@@ -696,6 +718,7 @@ async function websiteRegions(request, env) {
         state: d?.region || null,
         country: d?.country || null,
         countryCode: countryCode(d?.country),
+        regionDiagnostic: server.regionDiagnostic || (server.region?'resolved':'not_checked'),
         version: d?.version ?? null,
         firstSeen: d?.firstSeen ?? null,
       };
