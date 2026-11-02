@@ -2,6 +2,7 @@ import {customsInteraction, customsFetch} from './customs.mjs';
 import {DOWNLOAD_COMMAND, handleDownload} from './download.mjs';
 import {STATS_COMMAND, recordStats, botStatsMessage, serverStatsMessage} from './stats.mjs';
 import {INFO_COMMAND, infoMessage} from './info.mjs';
+import {techFetch} from './tech-api.mjs';
 
 /**
  * Glutony — Discord user-installable Roblox 8v8 and Pro server browser on Cloudflare Workers.
@@ -786,6 +787,8 @@ async function registerCommand(request, env) {
 
 export default {
   async fetch(request, env, ctx) {
+    const techResponse = await techFetch(request, env);
+    if (techResponse) return techResponse;
     const customsResponse = await customsFetch(request, env);
     if (customsResponse) return customsResponse;
     const { pathname } = new URL(request.url);
