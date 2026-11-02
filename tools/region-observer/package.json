@@ -1,0 +1,13 @@
+{
+  "name": "glutony-region-observer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Manual, browser-local one-server datacenter diagnostic; not a background Roblox bot",
+  "scripts": {
+    "start": "node observe.mjs",
+    "test": "node --test observe.test.mjs"
+  },
+  "engines": {"node": ">=20"},
+  "dependencies": {"playwright": "^1.55.0"}
+}
