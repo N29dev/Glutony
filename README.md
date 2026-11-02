@@ -151,7 +151,8 @@ The public website at [blr.n29.kz/servers/](https://blr.n29.kz/servers/) uses th
 
 The website only retries **unknown** regions, approximately once every 75 seconds while open and visible, up to five background checks per page load.
 - If RoValra's `/v1/servers/details` knows a `datacenter_id` but doesn't yet provide a city or country, Glutony now optionally looks up that **exact** ID in RoValra's public `/v1/datacenters/list` map (cached for 10 minutes). Unknown and ambiguous IDs remain unresolved.
-- These public requests use no Discord/Roblox credentials, and datacenter IDs/IP addresses are not returned to the website. This improves possible coverage; it **cannot guarantee** locations for servers that RoValra does not recognize.
+
+- Each public server entry and bounded region refresh now carries `regionDiagnostic`, a fixed, non-sensitive reason code: `resolved`, `resolved_datacenter`, `rovalra_error`, `no_server_record`, `no_datacenter_id`, `datacenter_unmapped`, `datacenter_lookup_failed`, `disabled`, or `not_checked`. This intentionally excludes IP addresses, datacenter IDs, credentials and raw upstream error messages. Failures are cached with their reason so refreshes do not accidentally report a different cause.- These public requests use no Discord/Roblox credentials, and datacenter IDs/IP addresses are not returned to the website. This improves possible coverage; it **cannot guarantee** locations for servers that RoValra does not recognize.
  The Worker caches positive region details for 3 minutes; unknown locations for 45 seconds so newly available RoValra locations can appear without a manual page refresh. This is best-effort only: RoValra may not have a location for every public instance, so `Unknown region` can remain correct.
 - `GET /join?placeId=<place-id>&gameInstanceId=<public-job-uuid>&device=pc` (click-to-launch page)
 
