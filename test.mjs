@@ -227,6 +227,8 @@ assert.equal(proList.servers.length,1);
 assert.equal(proList.servers[0].id,serverPro);
 assert.equal(proList.servers[0].free,3);
 assert.equal(proList.servers[0].version,333);
+assert.equal(proList.servers[0].regionDiagnostic,'resolved');
+assert.ok(!JSON.stringify(proList).includes('datacenterId'),'Public payload must not reveal datacenter IDs');
 assert.ok(new URL(proList.servers[0].joinPc).pathname==='/join');
 assert.equal(new URL(proList.servers[0].joinMobile).searchParams.get('device'),'mobile');
 assert.ok(!JSON.stringify(proList).includes('preview1'),'Browser data must not disclose raw player tokens');
@@ -256,6 +258,7 @@ assert.equal(regionRefresh.headers.get('access-control-allow-origin'),'https://b
 const regionsPayload = await regionRefresh.json();
 assert.equal(regionsPayload.regions[server8].region,'Atlanta, Georgia, United States');
 assert.equal(regionsPayload.regions[server8].version,224);
+assert.equal(regionsPayload.regions[server8].regionDiagnostic,'resolved');
 assert.ok(!JSON.stringify(regionsPayload).includes('preview1'));
 assert.equal((await worker.fetch(new Request(
   'https://glutony.example/api/servers/regions?mode=8v8&ids=bogus'),env,{})).status,400);
@@ -286,6 +289,43 @@ assert.equal(calls.filter(c=>c.address.includes('/v1/datacenters/list')).length,
 await helpers.enrichMissingDatacenterDetails(new Map([['again',{datacenterId:'43',location:null,city:'',region:'',country:''}]]));
 assert.equal(calls.filter(c=>c.address.includes('/v1/datacenters/list')).length,1,'Repeated lookups reuse the public map');
 console.log('PASS: RoValra datacenter mapping is conservative, cached, and optional');
+
+// Exercise each safe public diagnostic without sending any real identifiers.
+const originalDiagnosticFetch=globalThis.fetch;
+const diagnosticId='33333333-4444-4555-8666-777777777777';
+const diagnosticPlace='1234567890123';
+const missingLocation={server_id:diagnosticId,city:'Unknown',region:'Unknown',country:'Unknown'};
+const diagnosticCases=[
+  {reason:'no_datacenter_id',row:missingLocation},
+  {reason:'datacenter_unmapped',row:{...missingLocation,datacenter_id:7777}},
+  {reason:'resolved_datacenter',row:{...missingLocation,datacenter_id:42}},
+  {reason:'no_server_record',row:null},
+  {reason:'rovalra_error',httpError:true}
+];
+for(let i=0;i<diagnosticCases.length;i++){
+  const scenario=diagnosticCases[i];
+  let requests=0;
+  globalThis.fetch=async url=>{
+    requests++;
+    if(String(url).includes('/v1/servers/details')){
+      if(scenario.httpError)return new Response('unavailable',{status:503});
+      return Response.json({status:'success',servers:scenario.row?[scenario.row]:[]});
+    }
+    throw Error('Unexpected diagnostic test URL');
+  };
+  const placeId=diagnosticPlace+i;
+  const server={id:diagnosticId};
+  await helpers.attachDetails({placeId},[server],env);
+  assert.equal(server.regionDiagnostic,scenario.reason,'Reason must reflect provider state: '+scenario.reason);
+  if(scenario.reason==='resolved_datacenter')assert.equal(server.region,'Frankfurt, Hesse, Germany');
+  else assert.equal(server.region,null);
+  const cached={id:diagnosticId};
+  await helpers.attachDetails({placeId},[cached],env);
+  assert.equal(cached.regionDiagnostic,scenario.reason,'Reason must survive cache: '+scenario.reason);
+  assert.equal(requests,1,'Second lookup must reuse cached reason');
+}
+globalThis.fetch=originalDiagnosticFetch;
+console.log('PASS: exact diagnostic reasons, failure modes, and cached values');
 
 console.log('PASS: passive region refresh validates server IDs, CORS, and known server metadata');
 
