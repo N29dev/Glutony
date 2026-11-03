@@ -3,7 +3,7 @@
  * Uses existing CUSTOMS_DB D1 binding; requires a distinct TECH_ADMIN_KEY secret.
  */
 const TECH_ORIGIN = 'https://blr.n29.kz';
-const TECH_STATUSES = new Set(['allowed','disallowed','punishable']);
+const TECH_STATUSES = new Set(['allowed','disallowed']);
 const TECH_ID = /^[a-z0-9][a-z0-9-]{1,70}$/;
 const TECH_TEXT = /^[^<>{}\u0000-\u001f]*$/u;
 const TECH_MAX_BODY = 4096;
@@ -87,7 +87,10 @@ export async function techFetch(request,env){
         if(!TECH_ID.test(id))continue;
         if(row.hidden){entries.push({id,hidden:true,updatedAt:row.updated_at});continue;}
         try{
-          const parsed=validateTechEntry(JSON.parse(row.data),id);
+          const saved=JSON.parse(row.data);
+          // Read legacy punishable records as disallowed without losing their details.
+          if(saved?.status==='punishable')saved.status='disallowed';
+          const parsed=validateTechEntry(saved,id);
           if(parsed)entries.push({...parsed,updatedAt:row.updated_at});
         }catch{}
       }
