@@ -48,6 +48,8 @@ test('entry validation rejects bad statuses, markup and unknown video hosts',()=
   assert.equal(validateTechEntry(valid,'nagi-delay-trap')?.name,'Delay Trap');
   assert.equal(validateTechEntry({...valid,status:'allowedish'},'nagi-delay-trap'),null);
   assert.equal(validateTechEntry({...valid,status:'punishable'},'nagi-delay-trap'),null);
+  const manyStyles=Array.from({length:45},(_,i)=>'Style '+i);
+  assert.equal(validateTechEntry({...valid,styles:manyStyles},'nagi-delay-trap')?.styles.length,45);
   assert.equal(validateTechEntry({...valid,name:'<script>alert(1)</script>'},'nagi-delay-trap'),null);
   assert.equal(validateTechEntry({...valid,video:'https://youtube.com.attacker.test/shorts/dQw4w9WgXcQ'},'nagi-delay-trap'),null);
   assert.equal(validateTechEntry({...valid,styles:[]},'nagi-delay-trap'),null);
