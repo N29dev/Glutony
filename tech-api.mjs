@@ -59,7 +59,7 @@ export function validateTechEntry(input,id){
   const note=input.note==null||input.note===''?'':textField(input.note,500);
   const video=youtube(input.video);
   if(!name||!TECH_STATUSES.has(input.status)||note===null||video===null)return null;
-  if(!Array.isArray(input.styles)||input.styles.length===0||input.styles.length>8)return null;
+  if(!Array.isArray(input.styles)||input.styles.length===0)return null;
   const styles=input.styles.map(style=>textField(style,48));
   if(styles.some(style=>!style)||new Set(styles).size!==styles.length)return null;
   return {id,name,status:input.status,styles,note,video};
