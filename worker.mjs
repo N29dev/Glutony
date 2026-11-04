@@ -28,6 +28,7 @@ const PAGE_SIZE = 4;
 // Refresh at 3 minutes, but never advertise servers checked over 5 minutes ago.
 const SOFT_CACHE_MS = 3 * 60_000;
 const MAX_SNAPSHOT_AGE_MS = 5 * 60_000;
+const MAX_LAST_KNOWN_AGE_MS = 15 * 60_000; // Clearly labeled fallback only
 const RATE_LIMIT_BACKOFF_MS = 180_000;
 const SNAPSHOT_TTL_SECONDS = 600;
 const memoryCaches = new Map(); // Mode + Place ID -> most recent public server list
@@ -228,7 +229,7 @@ async function getServers(env, mode = '8v8', refresh = false) {
     }
   }
   const age = cached ? now - cached.at : Infinity;
-  if (cached && (age < SOFT_CACHE_MS || (refresh && age < 15_000))) return cached;
+  if (cached && age < (refresh ? 90_000 : SOFT_CACHE_MS)) return cached;
   if ((retryAfter.get(cacheKey) || 0) > now) {
     if (cached && age <= MAX_SNAPSHOT_AGE_MS) return cached;
     const limited = new Error('Roblox is rate-limiting server requests. Please try again later.');
@@ -300,6 +301,43 @@ async function getServers(env, mode = '8v8', refresh = false) {
 }
 
 // RoValra has a separate, optional server-details endpoint. It reports region,
+
+// Scheduled scans own Roblox requests for 8v8 and Pro. User-facing traffic
+// reads shared snapshots instead of multiplying requests across Worker isolates.
+async function getSharedServers(env, mode = '8v8', refresh = false) {
+  if (mode === 'main' || !env.CUSTOMS_DB) return getServers(env, mode, refresh);
+  const {placeId, pages} = config(env, mode);
+  const keys = [`${mode}:${placeId}:1`];
+  if (pages !== 1) keys.push(`${mode}:${placeId}:${pages}`); // legacy snapshot during rollout
+  const shared = await Promise.all(keys.map(key => readDurableSnapshot(env, key)));
+  const fallback = await Promise.all(keys.map(key => readSnapshot(key)));
+  const candidates = [...shared, ...keys.map(key => memoryCaches.get(key)), ...fallback]
+    .filter(s => s && Array.isArray(s.servers) && Number.isFinite(s.at) &&
+      s.placeId === placeId && s.mode === mode && s.at <= Date.now() + 60_000);
+  const result = candidates.sort((a, b) => b.at - a.at)[0];
+  if (!result) {
+    const error = new Error('No saved server list yet. The scheduled refresh is preparing the next sample.');
+    error.code = 'server_snapshot_unavailable';
+    throw error;
+  }
+  if (Date.now() - result.at > MAX_LAST_KNOWN_AGE_MS) throw expiredServerSample(
+    new Error('The scheduled scan has not produced a fresh sample.'));
+  return result;
+}
+
+// One Cron event per minute, alternating modes. Limit to one server-list page
+// per tick; the website and Discord bot do not initiate their own Roblox scans.
+async function scanScheduledServers(env, scheduledTime) {
+  const mode = new Date(scheduledTime).getUTCMinutes() % 2 === 0 ? '8v8' : 'pro';
+  try {
+    const result = await getServers({...env, ROBLOX_MAX_PAGES: '1'}, mode, true);
+    console.log('Scheduled '+mode+' sample:', result.servers.length,
+      'servers; checked', new Date(result.at).toISOString());
+  } catch (error) {
+    console.warn('Scheduled '+mode+' scan failed:', String(error?.message || error));
+  }
+}
+
 // place_version, and first_seen. This information can be unavailable/stale.
 // Never send Discord or Roblox credentials to it.
 function safeLocationPart(value) {
@@ -597,6 +635,7 @@ function listMessage(result, page, sort) {
   const children = [
     textPart(`## ⚽ Glutony · ${MODES[result.mode || '8v8'].title}\n-# Public servers · Select one to join`),
   ];
+  if (Date.now() - result.at > MAX_SNAPSHOT_AGE_MS) children.push(textPart('⚠️ **Last-known servers only.** This sample is over five minutes old; availability and player counts are unverified.'));
   if (!items.length) children.push(textPart('No joinable servers found in the scanned pages. Try **Refresh**.'));
   for (const [i, s] of visible.entries()) {
     const number = current * PAGE_SIZE + i + 1;
@@ -637,6 +676,7 @@ function detailMessage(result, server, page, sort, headshots, origin = '') {
     textPart(`### ${server.playing} / ${server.maxPlayers} players\n${server.free} slots available · **${pingLabel(server)}** Roblox-reported ping`),
     textPart(`**Place version:** ${version}\n**Uptime:** ${age} (estimated from first seen)\n**Server ID:** \`${server.id}\``),
   ];
+  if (Date.now() - result.at > MAX_SNAPSHOT_AGE_MS) children.push(textPart('⚠️ Last-known server snapshot. This server may have closed; player counts are unverified.'));
   if (headshots.length) {
     children.push({type: 14, divider: true, spacing: 1});
     children.push(textPart(`**Players** · ${headshots.length} preview${headshots.length === 1 ? '' : 's'}${server.playing > headshots.length ? ` · +${server.playing - headshots.length} others` : ''}`));
@@ -675,7 +715,7 @@ function responseCallback(type, data) { return json(data === undefined ? { type 
 
 async function renderList(interaction, env, mode, page, sort, refresh) {
   try {
-    const result = await getServers(env, mode, refresh);
+    const result = await getSharedServers(env, mode, refresh);
     const {visible} = pagedServers(result, page, sort);
     await attachDetails(result, visible, env);
     await editOriginal(interaction, listMessage(result, page, sort));
@@ -687,7 +727,7 @@ async function renderList(interaction, env, mode, page, sort, refresh) {
 
 async function renderDetail(interaction, env, mode, jobId, page, sort, refresh, origin) {
   try {
-    const result = await getServers(env, mode, refresh);
+    const result = await getSharedServers(env, mode, refresh);
     const server = result.servers.find(s => s.id === jobId);
     if (!server) {
       await editOriginal(interaction, errorMessage('Server not found', 'The server may have closed or the listing has changed.', `g:b:${result.mode || '8v8'}:${page}:${sort}`));
@@ -708,7 +748,7 @@ async function renderStats(interaction, env, view) {
     if (view === 'bot') {
       message = await botStatsMessage(env);
     } else {
-      message = serverStatsMessage(await getServers(env, view));
+      message = serverStatsMessage(await getSharedServers(env, view));
     }
   } catch (error) {
     console.warn('Glutony stats render failed:', String(error));
@@ -863,10 +903,10 @@ async function websiteServers(request, env) {
   const mode = url.searchParams.get('mode') || '8v8';
   if (!MODES[mode]) return siteJson({error:'Unknown mode; choose main, 8v8, or pro.'}, 400);
   try {
-    const result = await getServers(env, mode, false);
+    const result = await getSharedServers(env, mode, false);
     // Never present very old public instances as current matches.
     const snapshotAgeMs = Math.max(0, Date.now() - result.at);
-    if (snapshotAgeMs > MAX_SNAPSHOT_AGE_MS) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
+    if (snapshotAgeMs > MAX_LAST_KNOWN_AGE_MS) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
     // Fetch regional details in a single RoValra batch. Cap it for rate limits.
     const entries = sampleSpread(result.servers,mode==='main'?24:60);
     for (let i=0; i<Math.min(entries.length, 60); i+=20) {
@@ -892,6 +932,7 @@ async function websiteServers(request, env) {
       scanned: result.scanned, hasMore: result.hasMore || result.servers.length > entries.length,
       updatedAt: new Date(result.at).toISOString(),
       stale: Date.now() - result.at > SOFT_CACHE_MS,
+      lastKnown: Date.now() - result.at > MAX_SNAPSHOT_AGE_MS,
       disclaimer: 'Locations and versions are provided by RoValra where available. Roblox may ignore target instance IDs.'
     });
   } catch (error) {
@@ -918,7 +959,7 @@ async function websiteRegions(request, env) {
     return siteJson({error:'Provide 1–8 valid server IDs.'}, 400);
   }
   try {
-    const result = await getServers(env, mode, false);
+    const result = await getSharedServers(env, mode, false);
     const selected = [...new Set(rawIds.map(id => id.toLowerCase()))]
       .map(id => result.servers.find(server => server.id.toLowerCase() === id))
       .filter(Boolean);
@@ -954,7 +995,7 @@ async function websiteHeadshots(request, env) {
     return siteJson({error:'Invalid mode or server ID.'}, 400);
   }
   try {
-    const result = await getServers(env, mode, false);
+    const result = await getSharedServers(env, mode, false);
     const server = result.servers.find(s => s.id.toLowerCase() === jobId.toLowerCase());
     if (!server) return siteJson({error:'Server is no longer listed.'}, 404);
     const headshots = await getPlayerHeadshots(server);
@@ -1000,6 +1041,9 @@ async function registerCommand(request, env) {
 }
 
 export default {
+  async scheduled(event, env, ctx) {
+    await scanScheduledServers(env, event.scheduledTime);
+  },
   async fetch(request, env, ctx) {
     if (new URL(request.url).pathname === '/api/account/region-report') return regionReportFetch(request,env);
     const accountResponse = await accountFetch(request, env);
@@ -1035,4 +1079,4 @@ export default {
   },
 };
 
-export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanScheduledServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
