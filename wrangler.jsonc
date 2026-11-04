@@ -8,6 +8,7 @@
     "enabled": true
   },
   "keep_vars": true,
+  "triggers": {"crons": ["* * * * *"]},
   "vars": {
     "DISCORD_APPLICATION_ID": "1563907646757666926"
   },
