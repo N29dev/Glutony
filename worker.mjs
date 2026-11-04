@@ -25,7 +25,9 @@ const MODES = Object.freeze({
 });
 const API = 'https://discord.com/api/v10';
 const PAGE_SIZE = 4;
-const SOFT_CACHE_MS = 90_000; // Fewer Roblox requests shared by website and Discord
+// Refresh at 3 minutes, but never advertise servers checked over 5 minutes ago.
+const SOFT_CACHE_MS = 3 * 60_000;
+const MAX_SNAPSHOT_AGE_MS = 5 * 60_000;
 const RATE_LIMIT_BACKOFF_MS = 180_000;
 const SNAPSHOT_TTL_SECONDS = 600;
 const memoryCaches = new Map(); // Mode + Place ID -> most recent public server list
@@ -181,6 +183,30 @@ async function storeDurableSnapshot(env, cacheKey, data) {
   }
 }
 
+function serverFailureCode(error) {
+  const message = String(error?.message || error || '');
+  return message.includes('rate-limiting') ? 'roblox_rate_limited'
+    : message.includes('denied API access') ? 'roblox_access_denied'
+    : message.includes('did not respond') ? 'roblox_timeout'
+    : message.includes('server API returned HTTP') ? 'roblox_http_error'
+    : message.includes('invalid JSON') || message.includes('unexpected server response') ? 'roblox_invalid_response'
+    : message.includes('is invalid') ? 'invalid_configuration'
+    : 'server_api_error';
+}
+function expiredServerSample(cause) {
+  const error = new Error('The last server sample is too old.');
+  error.code = 'server_sample_expired';
+  error.reason = serverFailureCode(cause);
+  return error;
+}
+function retryDelayMs(header) {
+  if (!header) return RATE_LIMIT_BACKOFF_MS;
+  const seconds = Number(header);
+  let ms = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : Date.parse(header) - Date.now();
+  if (!Number.isFinite(ms)) return RATE_LIMIT_BACKOFF_MS;
+  return Math.max(15_000, Math.min(10 * 60_000, ms));
+}
+
 async function getServers(env, mode = '8v8', refresh = false) {
   const {placeId, pages} = config(env, mode);
   const cacheKey = `${mode}:${placeId}:${pages}`;
@@ -204,8 +230,10 @@ async function getServers(env, mode = '8v8', refresh = false) {
   const age = cached ? now - cached.at : Infinity;
   if (cached && (age < SOFT_CACHE_MS || (refresh && age < 15_000))) return cached;
   if ((retryAfter.get(cacheKey) || 0) > now) {
-    if (cached) return cached;
-    throw new Error('Roblox is rate-limiting server requests. Please try again later.');
+    if (cached && age <= MAX_SNAPSHOT_AGE_MS) return cached;
+    const limited = new Error('Roblox is rate-limiting server requests. Please try again later.');
+    if (cached) throw expiredServerSample(limited);
+    throw limited;
   }
   if (pendingScans.has(cacheKey)) return pendingScans.get(cacheKey);
   const scan = (async () => {
@@ -231,7 +259,7 @@ async function getServers(env, mode = '8v8', refresh = false) {
         if (response.status === 429) {
           // Do not discard a successfully fetched first page when a later
           // pagination request is rate-limited. Return a partial sample.
-          retryAfter.set(cacheKey, Date.now() + RATE_LIMIT_BACKOFF_MS);
+          retryAfter.set(cacheKey, Date.now() + retryDelayMs(response.headers.get('retry-after')));
           if (pageCount > 0) break;
           throw new Error('Roblox is rate-limiting server requests. Please try again later.');
         }
@@ -249,8 +277,9 @@ async function getServers(env, mode = '8v8', refresh = false) {
       } while (cursor && pageCount < pages);
     } catch (error) {
       if (cached) {
-        console.warn('Roblox scan failed; serving previous snapshot:', String(error?.message || error));
-        return cached;
+        console.warn('Roblox scan failed for '+mode+':', String(error?.message || error));
+        if (Date.now() - cached.at <= MAX_SNAPSHOT_AGE_MS) return cached;
+        throw expiredServerSample(error);
       }
       throw error;
     }
@@ -837,7 +866,7 @@ async function websiteServers(request, env) {
     const result = await getServers(env, mode, false);
     // Never present very old public instances as current matches.
     const snapshotAgeMs = Math.max(0, Date.now() - result.at);
-    if (snapshotAgeMs > 30 * 60_000) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
+    if (snapshotAgeMs > MAX_SNAPSHOT_AGE_MS) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
     // Fetch regional details in a single RoValra batch. Cap it for rate limits.
     const entries = sampleSpread(result.servers,mode==='main'?24:60);
     for (let i=0; i<Math.min(entries.length, 60); i+=20) {
@@ -866,18 +895,14 @@ async function websiteServers(request, env) {
       disclaimer: 'Locations and versions are provided by RoValra where available. Roblox may ignore target instance IDs.'
     });
   } catch (error) {
-    console.error('Website server API failed:', error);
-    // Only expose a bounded, non-sensitive error category to website visitors.
-    // Detailed errors remain available in Cloudflare Worker logs.
-    const message = String(error?.message || '');
-    const category = message.includes('rate-limiting') ? 'roblox_rate_limited'
-      : message.includes('denied API access') ? 'roblox_access_denied'
-      : message.includes('did not respond') ? 'roblox_timeout'
-      : message.includes('server API returned HTTP') ? 'roblox_http_error'
-      : message.includes('invalid JSON') || message.includes('unexpected server response') ? 'roblox_invalid_response'
-      : message.includes('PLACE_ID is invalid') ? 'invalid_configuration'
-      : 'server_api_error';
-    return siteJson({error:'Server list unavailable.', code:category}, 503);
+    console.error('Website server API failed for '+mode+':', error);
+    // Expose only safe error categories, not raw upstream payloads or secrets.
+    if (error?.code === 'server_sample_expired') return siteJson({
+      error: 'The last server sample is too old.',
+      code: 'server_sample_expired',
+      reason: error.reason || 'server_api_error',
+    }, 503);
+    return siteJson({error:'Server list unavailable.', code:serverFailureCode(error)}, 503);
   }
 }
 // Website background lookup: only recheck up to 8 still-active servers.
