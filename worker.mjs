@@ -24,8 +24,12 @@ const MODES = Object.freeze({
 });
 const API = 'https://discord.com/api/v10';
 const PAGE_SIZE = 4;
-const SOFT_CACHE_MS = 35_000;
+const SOFT_CACHE_MS = 90_000; // Fewer Roblox requests shared by website and Discord
+const RATE_LIMIT_BACKOFF_MS = 180_000;
+const SNAPSHOT_TTL_SECONDS = 600;
 const memoryCaches = new Map(); // Mode + Place ID -> most recent public server list
+const pendingScans = new Map(); // Coalesce overlapping requests on the same Worker isolate
+const retryAfter = new Map(); // Respect a recent Roblox rate limit without retry loops
 const detailCache = new Map(); // Place ID + Job ID -> { details, expiry }; isolate-local, best effort
 const datacenterCache = {at:0, map:null, pending:null, lastLookupFailed:false}; // Optional public location map, best effort
 
@@ -120,55 +124,107 @@ function sampleSpread(items,limit){
  for(let i=0;i<limit;i++)output.push(items[Math.floor((i+.5)*items.length/limit)]);
  return output;
 }
-async function getServers(env, mode = '8v8', refresh = false) {
-  const { placeId, pages } = config(env, mode);
-  const cacheKey = `${mode}:${placeId}:${pages}`;
-  const cached = memoryCaches.get(cacheKey);
-  const age = cached ? Date.now() - cached.at : Infinity;
-  if (cached && (age < SOFT_CACHE_MS || (refresh && age < 15_000))) {
-    return cached;
+// Cloudflare's cache can share recent server snapshots across Worker isolates in one colo.
+// It is best-effort: each colo still has its own cache and Roblox may reject cold scans.
+function snapshotRequest(cacheKey) {
+  return new Request('https://glutony.scp343hey.workers.dev/_cache/servers/' + encodeURIComponent(cacheKey));
+}
+async function readSnapshot(cacheKey) {
+  if (typeof caches === 'undefined' || !caches.default) return null;
+  try {
+    const response = await caches.default.match(snapshotRequest(cacheKey));
+    if (!response) return null;
+    const data = await response.json();
+    if (!data || !Array.isArray(data.servers) || !Number.isFinite(data.at)) return null;
+    return data;
+  } catch (error) {
+    console.warn('Server cache read failed:', String(error));
+    return null;
   }
-  const servers = new Map();
-  let cursor = null;
-  let pageCount = 0;
-  do {
-    const url = new URL(`https://games.roblox.com/v1/games/${placeId}/servers/Public`);
-    url.searchParams.set('limit', '100');
-    url.searchParams.set('sortOrder', 'Asc');
-    url.searchParams.set('excludeFullGames', 'true');
-    if (cursor) url.searchParams.set('cursor', cursor);
-    let response;
+}
+async function storeSnapshot(cacheKey, data) {
+  if (typeof caches === 'undefined' || !caches.default) return;
+  try {
+    await caches.default.put(snapshotRequest(cacheKey), new Response(JSON.stringify(data), {
+      headers: {'content-type':'application/json','cache-control':`public, max-age=${SNAPSHOT_TTL_SECONDS}`},
+    }));
+  } catch (error) {
+    console.warn('Server cache write failed:', String(error));
+  }
+}
+async function getServers(env, mode = '8v8', refresh = false) {
+  const {placeId, pages} = config(env, mode);
+  const cacheKey = `${mode}:${placeId}:${pages}`;
+  let cached = memoryCaches.get(cacheKey);
+  if (!cached) {
+    cached = await readSnapshot(cacheKey);
+    if (cached) memoryCaches.set(cacheKey, cached);
+  }
+  const now = Date.now();
+  const age = cached ? now - cached.at : Infinity;
+  if (cached && (age < SOFT_CACHE_MS || (refresh && age < 15_000))) return cached;
+  if ((retryAfter.get(cacheKey) || 0) > now) {
+    if (cached) return cached;
+    throw new Error('Roblox is rate-limiting server requests. Please try again later.');
+  }
+  if (pendingScans.has(cacheKey)) return pendingScans.get(cacheKey);
+  const scan = (async () => {
+    const servers = new Map();
+    let cursor = null;
+    let pageCount = 0;
     try {
-      response = await fetch(url.toString(), {
-        headers: { 'accept': 'application/json', 'user-agent': 'GlutonyServerBrowser/1.1' },
-        signal: AbortSignal.timeout(6500),
-      });
-    } catch (_) {
-      if (cached) return cached; // Remain useful if Roblox has a temporary outage.
-      throw new Error('Roblox did not respond. Please try again later.');
+      do {
+        const url = new URL(`https://games.roblox.com/v1/games/${placeId}/servers/Public`);
+        url.searchParams.set('limit', '100');
+        url.searchParams.set('sortOrder', 'Asc');
+        url.searchParams.set('excludeFullGames', 'true');
+        if (cursor) url.searchParams.set('cursor', cursor);
+        let response;
+        try {
+          response = await fetch(url.toString(), {
+            headers: {'accept':'application/json','user-agent':'GlutonyServerBrowser/1.1'},
+            signal: AbortSignal.timeout(6500),
+          });
+        } catch (_) {
+          throw new Error('Roblox did not respond. Please try again later.');
+        }
+        if (response.status === 429) {
+          // Back off this isolate even if there is no usable snapshot.
+          retryAfter.set(cacheKey, Date.now() + RATE_LIMIT_BACKOFF_MS);
+          throw new Error('Roblox is rate-limiting server requests. Please try again later.');
+        }
+        if (response.status === 401 || response.status === 403) throw new Error('Roblox denied API access from Cloudflare.');
+        if (!response.ok) throw new Error(`Roblox server API returned HTTP ${response.status}.`);
+        let payload;
+        try { payload = await response.json(); } catch (_) { throw new Error('Roblox returned invalid JSON.'); }
+        if (!payload || !Array.isArray(payload.data)) throw new Error('Roblox returned an unexpected server response.');
+        for (const item of payload.data) {
+          const server = normalizedServer(item);
+          if (server) servers.set(server.id, server);
+        }
+        cursor = typeof payload.nextPageCursor === 'string' ? payload.nextPageCursor : null;
+        pageCount++;
+      } while (cursor && pageCount < pages);
+    } catch (error) {
+      if (cached) {
+        console.warn('Roblox scan failed; serving previous snapshot:', String(error?.message || error));
+        return cached;
+      }
+      throw error;
     }
-    if (response.status === 429) {
-      if (cached) return cached;
-      throw new Error('Roblox is rate-limiting server requests. Please try again later.');
-    }
-    if (response.status === 401 || response.status === 403) throw new Error('Roblox denied API access from Cloudflare.');
-    if (!response.ok) throw new Error(`Roblox server API returned HTTP ${response.status}.`);
-    let payload;
-    try { payload = await response.json(); } catch (_) { throw new Error('Roblox returned invalid JSON.'); }
-    if (!payload || !Array.isArray(payload.data)) throw new Error('Roblox returned an unexpected server response.');
-    for (const item of payload.data) {
-      const server = normalizedServer(item);
-      if (server) servers.set(server.id, server);
-    }
-    cursor = typeof payload.nextPageCursor === 'string' ? payload.nextPageCursor : null;
-    pageCount++;
-  } while (cursor && pageCount < pages);
-  const result = {
-    mode, at: Date.now(), placeId, maxPages: pages, servers: mode==='main'?sampleSpread(Array.from(servers.values()),24):Array.from(servers.values()),
-    hasMore: !!cursor || (mode==='main'&&servers.size>24), scanned: pageCount,
-  };
-  memoryCaches.set(cacheKey, result);
-  return result;
+    const result = {
+      mode, at: Date.now(), placeId, maxPages: pages,
+      servers: mode==='main' ? sampleSpread(Array.from(servers.values()), 24) : Array.from(servers.values()),
+      hasMore: !!cursor || (mode==='main' && servers.size > 24), scanned: pageCount,
+    };
+    memoryCaches.set(cacheKey, result);
+    retryAfter.delete(cacheKey);
+    await storeSnapshot(cacheKey, result);
+    return result;
+  })();
+  pendingScans.set(cacheKey, scan);
+  try { return await scan; }
+  finally { pendingScans.delete(cacheKey); }
 }
 
 // RoValra has a separate, optional server-details endpoint. It reports region,
