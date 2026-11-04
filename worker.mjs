@@ -191,6 +191,16 @@ async function getServers(env, mode = '8v8', refresh = false) {
     if (cached) memoryCaches.set(cacheKey, cached);
   }
   const now = Date.now();
+  // An isolate can keep an old in-memory snapshot after another Cloudflare
+  // location has written a newer one to D1. Reuse the shared successful
+  // sample instead of immediately sending another rate-limited Roblox scan.
+  if (cached && now - cached.at >= SOFT_CACHE_MS) {
+    const shared = await readDurableSnapshot(env, cacheKey);
+    if (shared && shared.at > cached.at) {
+      cached = shared;
+      memoryCaches.set(cacheKey, shared);
+    }
+  }
   const age = cached ? now - cached.at : Infinity;
   if (cached && (age < SOFT_CACHE_MS || (refresh && age < 15_000))) return cached;
   if ((retryAfter.get(cacheKey) || 0) > now) {
