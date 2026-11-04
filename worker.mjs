@@ -943,6 +943,9 @@ async function websiteServers(request, env) {
       code: 'server_sample_expired',
       reason: error.reason || 'server_api_error',
     }, 503);
+    if (error?.code === 'server_snapshot_unavailable') return siteJson({
+      error: error.message, code: error.code,
+    }, 503);
     return siteJson({error:'Server list unavailable.', code:serverFailureCode(error)}, 503);
   }
 }
