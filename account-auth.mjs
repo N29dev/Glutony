@@ -15,7 +15,7 @@ function unb64(s) {
   return Uint8Array.from(raw, c => c.charCodeAt(0));
 }
 const random = size => b64(crypto.getRandomValues(new Uint8Array(size)));
-async function key(secret) { return crypto.subtle.importKey('raw',te.encode(secret),'HMAC',false,['sign','verify']); }
+async function key(secret) { return crypto.subtle.importKey('raw',te.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']); }
 async function sign(data,secret) {
   const payload=b64(te.encode(JSON.stringify(data)));
   const mac=b64(new Uint8Array(await crypto.subtle.sign('HMAC',await key(secret),te.encode(payload))));
