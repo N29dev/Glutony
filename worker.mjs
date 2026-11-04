@@ -752,6 +752,9 @@ async function websiteServers(request, env) {
   if (!MODES[mode]) return siteJson({error:'Unknown mode; choose main, 8v8, or pro.'}, 400);
   try {
     const result = await getServers(env, mode, false);
+    // Never present very old public instances as current matches.
+    const snapshotAgeMs = Math.max(0, Date.now() - result.at);
+    if (snapshotAgeMs > 30 * 60_000) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
     // Fetch regional details in a single RoValra batch. Cap it for rate limits.
     const entries = sampleSpread(result.servers,mode==='main'?24:60);
     for (let i=0; i<Math.min(entries.length, 60); i+=20) {
@@ -774,6 +777,7 @@ async function websiteServers(request, env) {
       mode, placeId: result.placeId, servers, count: servers.length,
       scanned: result.scanned, hasMore: result.hasMore || result.servers.length > entries.length,
       updatedAt: new Date(result.at).toISOString(),
+      stale: Date.now() - result.at > SOFT_CACHE_MS,
       disclaimer: 'Locations and versions are provided by RoValra where available. Roblox may ignore target instance IDs.'
     });
   } catch (error) {
