@@ -351,7 +351,7 @@ assert.equal(reusedSample.at,freshSample.at,'Newer shared D1 snapshot takes prio
 assert.equal(calls.filter(c=>c.address.includes('/v1/games/'+place8+'/')).length,beforeSharedCalls,
   'Newer D1 snapshot avoids another Roblox API request');
 
-// Failed Roblox scans must still reject snapshots older than 30 minutes.
+// Failed Roblox scans must still reject snapshots older than 5 minutes.
 helpers.memoryCaches.set(sharedCacheKey,oldSample);
 const failedEnv = {
   ...env,
@@ -374,6 +374,45 @@ try {
   helpers.memoryCaches.delete(sharedCacheKey);
 }
 console.log('PASS: isolates reuse shared snapshots, and expired samples are rejected');
+
+// Pro server samples expire after 5 minutes, even when Roblox is rate-limiting.
+const proCacheKey = `pro:${placePro}:1`;
+const proOld = {
+  mode:'pro',placeId:placePro,maxPages:1,at:Date.now()-6*60_000,
+  servers:[{id:serverPro,playing:7,maxPlayers:10,free:3,ping:90,playerTokens:[]}],
+  hasMore:false,scanned:1,
+};
+const proOriginalFetch = globalThis.fetch;
+let proRobloxCalls = 0;
+globalThis.fetch = async (url, options) => {
+  if (String(url).includes('games.roblox.com') && String(url).includes(placePro)) {
+    proRobloxCalls++;
+    return new Response('Too many requests',{status:429,headers:{'retry-after':'60'}});
+  }
+  return proOriginalFetch(url, options);
+};
+try {
+  helpers.memoryCaches.set(proCacheKey,proOld);
+  const proExpired = await worker.fetch(
+    new Request('https://glutony.example/api/servers?mode=pro'),env,{});
+  assert.equal(proExpired.status,503,'Pro samples older than five minutes are rejected');
+  const proExpiredJson = await proExpired.json();
+  assert.equal(proExpiredJson.code,'server_sample_expired');
+  assert.equal(proExpiredJson.reason,'roblox_rate_limited',
+    'Expired Pro results include safe upstream failure categories');
+  assert.equal(proRobloxCalls,1,'One Pro scan before rate limiting starts');
+
+  helpers.memoryCaches.set(proCacheKey,{...proOld,at:Date.now()-4*60_000});
+  const proCached = await worker.fetch(
+    new Request('https://glutony.example/api/servers?mode=pro'),env,{});
+  assert.equal(proCached.status,200,'Four-minute-old Pro sample can bridge short rate limit');
+  assert.equal((await proCached.json()).servers.length,1);
+  assert.equal(proRobloxCalls,1,'Backoff suppresses new requests while rate-limited');
+} finally {
+  globalThis.fetch = proOriginalFetch;
+  helpers.memoryCaches.delete(proCacheKey);
+}
+console.log('PASS: Pro freshness ends after 5 minutes, with Roblox backoff');
 
 console.log('PASS: passive region refresh validates server IDs, CORS, and known server metadata');
 
