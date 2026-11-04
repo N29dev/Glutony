@@ -689,7 +689,17 @@ async function websiteServers(request, env) {
     });
   } catch (error) {
     console.error('Website server API failed:', error);
-    return siteJson({error:'Server list unavailable. Try refreshing shortly.'}, 503);
+    // Only expose a bounded, non-sensitive error category to website visitors.
+    // Detailed errors remain available in Cloudflare Worker logs.
+    const message = String(error?.message || '');
+    const category = message.includes('rate-limiting') ? 'roblox_rate_limited'
+      : message.includes('denied API access') ? 'roblox_access_denied'
+      : message.includes('did not respond') ? 'roblox_timeout'
+      : message.includes('server API returned HTTP') ? 'roblox_http_error'
+      : message.includes('invalid JSON') || message.includes('unexpected server response') ? 'roblox_invalid_response'
+      : message.includes('PLACE_ID is invalid') ? 'invalid_configuration'
+      : 'server_api_error';
+    return siteJson({error:'Server list unavailable.', code:category}, 503);
   }
 }
 // Website background lookup: only recheck up to 8 still-active servers.
