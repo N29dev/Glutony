@@ -193,7 +193,7 @@ assert.ok(contains(edited,'🇫🇷'));
 const proJoin = helpers.joinLinks(placePro, serverPro, 'https://glutony.example');
 assert.equal(new URL(proJoin.pc).pathname,'/join');
 assert.equal(new URL(proJoin.pc).searchParams.get('gameInstanceId'),serverPro);
-assert.equal(new URL(proJoin.mobile).searchParams.get('device'),'mobile');
+assert.equal(proJoin.mobile,proJoin.pc,'Join landing URL is shared by PC and mobile');
 assert.ok(proJoin.direct.startsWith('roblox://experiences/start?'));
 assert.equal(new URL(proJoin.fallbackMobile).searchParams.get('deep_link_value'),proJoin.direct);
 const joinPage = await worker.fetch(new Request(proJoin.pc),env,{});
@@ -230,7 +230,7 @@ assert.equal(proList.servers[0].version,333);
 assert.equal(proList.servers[0].regionDiagnostic,'resolved');
 assert.ok(!JSON.stringify(proList).includes('datacenterId'),'Public payload must not reveal datacenter IDs');
 assert.ok(new URL(proList.servers[0].joinPc).pathname==='/join');
-assert.equal(new URL(proList.servers[0].joinMobile).searchParams.get('device'),'mobile');
+assert.equal(proList.servers[0].joinMobile,proList.servers[0].joinPc,'Public API uses one join link for all devices');
 assert.ok(!JSON.stringify(proList).includes('preview1'),'Browser data must not disclose raw player tokens');
 const mainCallsBefore=calls.filter(x=>x.address.includes('/v1/games/'+placeMain+'/')).length;
 const publicMain=await worker.fetch(new Request('https://glutony.example/api/servers?mode=main'),env,{});
@@ -326,6 +326,54 @@ for(let i=0;i<diagnosticCases.length;i++){
 }
 globalThis.fetch=originalDiagnosticFetch;
 console.log('PASS: exact diagnostic reasons, failure modes, and cached values');
+
+// A stale isolate must reuse a newer shared D1 snapshot rather than rescan Roblox.
+const sharedCacheKey = `8v8:${place8}:1`;
+const oldSample = {
+  mode:'8v8',placeId:place8,maxPages:1,at:Date.now()-31*60_000,
+  servers:[{id:server8,playing:12,maxPlayers:16,free:4,ping:70,playerTokens:[]}],
+  hasMore:false,scanned:1,
+};
+const freshSample = {...oldSample,at:Date.now()-20_000};
+const d1Env = {
+  ...env,
+  CUSTOMS_DB:{
+    prepare(statement){
+      assert.match(statement,/SELECT snapshot FROM server_snapshots/);
+      return {bind(){return {async first(){return {snapshot:JSON.stringify(freshSample)};}};}};
+    },
+  },
+};
+helpers.memoryCaches.set(sharedCacheKey,oldSample);
+const beforeSharedCalls = calls.filter(c=>c.address.includes('/v1/games/'+place8+'/')).length;
+const reusedSample = await helpers.getServers(d1Env,'8v8');
+assert.equal(reusedSample.at,freshSample.at,'Newer shared D1 snapshot takes priority');
+assert.equal(calls.filter(c=>c.address.includes('/v1/games/'+place8+'/')).length,beforeSharedCalls,
+  'Newer D1 snapshot avoids another Roblox API request');
+
+// Failed Roblox scans must still reject snapshots older than 30 minutes.
+helpers.memoryCaches.set(sharedCacheKey,oldSample);
+const failedEnv = {
+  ...env,
+  CUSTOMS_DB:{
+    prepare(){return {bind(){return {async first(){return {snapshot:JSON.stringify(oldSample)};}};}};},
+  },
+};
+const previousFetch = globalThis.fetch;
+globalThis.fetch = async (url, options) =>
+  String(url).includes('games.roblox.com')
+    ? new Response('denied',{status:403})
+    : previousFetch(url, options);
+try {
+  const expiredResponse = await worker.fetch(
+    new Request('https://glutony.example/api/servers?mode=8v8'),failedEnv,{});
+  assert.equal(expiredResponse.status,503,'Expired instances are never listed as live');
+  assert.equal((await expiredResponse.json()).code,'server_sample_expired');
+} finally {
+  globalThis.fetch = previousFetch;
+  helpers.memoryCaches.delete(sharedCacheKey);
+}
+console.log('PASS: isolates reuse shared snapshots, and expired samples are rejected');
 
 console.log('PASS: passive region refresh validates server IDs, CORS, and known server metadata');
 
