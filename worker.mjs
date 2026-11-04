@@ -513,17 +513,16 @@ function joinLinks(placeId, jobId, origin = '') {
   const bridge = new URL('/join', origin);
   bridge.searchParams.set('placeId', placeId);
   bridge.searchParams.set('gameInstanceId', jobId);
-  bridge.searchParams.set('device', 'pc');
-  const mobile = new URL(bridge);
-  mobile.searchParams.set('device', 'mobile');
-  return {pc: bridge.toString(), mobile: mobile.toString(), direct, legacy, fallbackMobile: fallbackMobile.toString()};
+  // One shareable link works on desktop and mobile; landing detects the device.
+  return {pc: bridge.toString(), mobile: bridge.toString(), direct, legacy, fallbackMobile: fallbackMobile.toString()};
 }
 
 function joinLanding(request, env) {
   const url = new URL(request.url);
   const placeId = url.searchParams.get('placeId') || '';
   const jobId = url.searchParams.get('gameInstanceId') || '';
-  const device = url.searchParams.get('device') === 'mobile' ? 'mobile' : 'pc';
+  const hint=url.searchParams.get('device');
+  const device = hint==='mobile' || (hint!=='pc' && /Android|iPhone|iPad|iPod/i.test(request.headers.get('user-agent')||'')) ? 'mobile' : 'pc';
   const allowedIds = Object.keys(MODES).map(m => config(env, m).placeId);
   if (!allowedIds.includes(placeId) || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(jobId)) {
     return new Response('Invalid or unsupported BL:R server link.', {status: 400, headers: {'content-type':'text/plain; charset=utf-8'}});
