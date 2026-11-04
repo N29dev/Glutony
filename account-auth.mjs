@@ -74,6 +74,7 @@ export async function accountFetch(request,env) {
   }
   if(!ready(env))return json({error:'Roblox sign-in is not configured.'},503);
   if(path==='/auth/roblox/start') {
+    try {
     const state=random(24), verifier=random(32), nonce=random(24);
     const challenge=b64(new Uint8Array(await crypto.subtle.digest('SHA-256',te.encode(verifier))));
     const pending=await sign({state,verifier,nonce,exp:Date.now()+600000},env.N29_SESSION_SECRET);
@@ -82,6 +83,10 @@ export async function accountFetch(request,env) {
       redirect_uri:CALLBACK,scope:'openid profile',state,nonce,code_challenge:challenge,code_challenge_method:'S256'}))
       auth.searchParams.set(k,v);
     return redirect(auth.toString(),[cookie('n29_oauth',pending,600,'/auth/roblox/')]);
+    } catch(error) {
+      console.error('Roblox OAuth initiation failed:', error?.stack || String(error));
+      return json({error:'Roblox sign-in failed to initialize. Check Glutony Worker logs.',code:'oauth_start_exception'},503);
+    }
   }
   if(path==='/auth/roblox/callback') {
     const clearing=cookie('n29_oauth','',0,'/auth/roblox/');
