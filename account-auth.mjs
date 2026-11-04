@@ -8,7 +8,7 @@ const te = new TextEncoder();
 const td = new TextDecoder();
 function b64(bytes) {
   let s = ''; for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+  return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
 function unb64(s) {
   const raw = atob(s.replace(/-/g,'+').replace(/_/g,'/') + '='.repeat((4-s.length%4)%4));
@@ -22,7 +22,7 @@ async function sign(data,secret) {
   return payload+'.'+mac;
 }
 async function verify(token,secret) {
-  if(!token || !/^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$/.test(token)) return null;
+  if(!token || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) return null;
   const [payload,mac]=token.split('.');
   const ok=await crypto.subtle.verify('HMAC',await key(secret),unb64(mac),te.encode(payload)).catch(()=>false);
   if(!ok)return null;
@@ -46,16 +46,16 @@ function json(data,status=200) {
   return new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'}});
 }
 function ready(env) {
-  return /^\\d{10,25}$/.test(env.ROBLOX_CLIENT_ID||'') &&
+  return /^\d{10,25}$/.test(env.ROBLOX_CLIENT_ID||'') &&
     typeof env.ROBLOX_CLIENT_SECRET==='string' && env.ROBLOX_CLIENT_SECRET.length>10 &&
     typeof env.N29_SESSION_SECRET==='string' && env.N29_SESSION_SECRET.length>=32;
 }
 function safeProfile(data) {
   const id=String(data?.sub||'');
-  if(!/^\\d{1,22}$/.test(id))throw Error('Invalid Roblox account ID');
+  if(!/^\d{1,22}$/.test(id))throw Error('Invalid Roblox account ID');
   const text=(v,n)=>typeof v==='string'?v.slice(0,n):'';
   return {id,username:text(data.preferred_username,60),displayName:text(data.name,80),
-    avatar:typeof data.picture==='string'&&/^https:\\/\\//.test(data.picture)?data.picture:null,
+    avatar:typeof data.picture==='string'&&/^https:\/\//.test(data.picture)?data.picture:null,
     profileUrl:'https://www.roblox.com/users/'+id+'/profile'};
 }
 export async function accountFetch(request,env) {
