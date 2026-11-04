@@ -153,12 +153,41 @@ async function storeSnapshot(cacheKey, data) {
     console.warn('Server cache write failed:', String(error));
   }
 }
+
+// D1 persists the last successful snapshot across Worker isolates and datacenters.
+// Missing migration or temporary D1 failures never prevent normal server scanning.
+async function readDurableSnapshot(env, cacheKey) {
+  if (!env.CUSTOMS_DB) return null;
+  try {
+    const row = await env.CUSTOMS_DB.prepare('SELECT snapshot FROM server_snapshots WHERE cache_key = ?')
+      .bind(cacheKey).first();
+    if (!row?.snapshot) return null;
+    const data = JSON.parse(row.snapshot);
+    return Array.isArray(data.servers) && Number.isFinite(data.at) ? data : null;
+  } catch (err) {
+    console.warn('Durable server snapshot read unavailable:', String(err?.message || err));
+    return null;
+  }
+}
+async function storeDurableSnapshot(env, cacheKey, data) {
+  if (!env.CUSTOMS_DB) return;
+  try {
+    await env.CUSTOMS_DB.prepare(
+      'INSERT INTO server_snapshots (cache_key, snapshot, updated_at) VALUES (?, ?, ?) ' +
+      'ON CONFLICT(cache_key) DO UPDATE SET snapshot=excluded.snapshot, updated_at=excluded.updated_at'
+    ).bind(cacheKey, JSON.stringify(data), Date.now()).run();
+  } catch (err) {
+    console.warn('Durable server snapshot write unavailable:', String(err?.message || err));
+  }
+}
+
 async function getServers(env, mode = '8v8', refresh = false) {
   const {placeId, pages} = config(env, mode);
   const cacheKey = `${mode}:${placeId}:${pages}`;
   let cached = memoryCaches.get(cacheKey);
   if (!cached) {
     cached = await readSnapshot(cacheKey);
+    if (!cached) cached = await readDurableSnapshot(env, cacheKey);
     if (cached) memoryCaches.set(cacheKey, cached);
   }
   const now = Date.now();
@@ -190,8 +219,10 @@ async function getServers(env, mode = '8v8', refresh = false) {
           throw new Error('Roblox did not respond. Please try again later.');
         }
         if (response.status === 429) {
-          // Back off this isolate even if there is no usable snapshot.
+          // Do not discard a successfully fetched first page when a later
+          // pagination request is rate-limited. Return a partial sample.
           retryAfter.set(cacheKey, Date.now() + RATE_LIMIT_BACKOFF_MS);
+          if (pageCount > 0) break;
           throw new Error('Roblox is rate-limiting server requests. Please try again later.');
         }
         if (response.status === 401 || response.status === 403) throw new Error('Roblox denied API access from Cloudflare.');
@@ -219,8 +250,9 @@ async function getServers(env, mode = '8v8', refresh = false) {
       hasMore: !!cursor || (mode==='main' && servers.size > 24), scanned: pageCount,
     };
     memoryCaches.set(cacheKey, result);
-    retryAfter.delete(cacheKey);
-    await storeSnapshot(cacheKey, result);
+    // Preserve backoff when the scan ended early after an HTTP 429.
+    if (!retryAfter.has(cacheKey) || retryAfter.get(cacheKey) <= Date.now()) retryAfter.delete(cacheKey);
+    await Promise.all([storeSnapshot(cacheKey, result), storeDurableSnapshot(env, cacheKey, result)]);
     return result;
   })();
   pendingScans.set(cacheKey, scan);
