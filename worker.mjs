@@ -746,6 +746,80 @@ const websiteHeaders = {
 function siteJson(data, status = 200) {
   return new Response(JSON.stringify(data), {status, headers:{...websiteHeaders, 'content-type':'application/json; charset=utf-8'}});
 }
+
+const REGION_CODES = Object.freeze({EU:'Europe',NA:'North America',SA:'South America',AS:'Asia',OC:'Oceania',ME:'Middle East',AF:'Africa'});
+const REGION_REPORT_TTL_MS = 6 * 3600_000;
+async function regionReportSummary(env, placeId, ids) {
+  const result={};
+  if(!env.CUSTOMS_DB || !ids.length)return result;
+  const valid=ids.filter(id=>/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)).slice(0,60);
+  if(!valid.length)return result;
+  try{
+    const placeholders=valid.map(()=>'?').join(',');
+    const rows=await env.CUSTOMS_DB.prepare(
+      'SELECT server_id, region_code, COUNT(*) AS votes, MAX(updated_at) AS last_at '+
+      'FROM server_region_reports WHERE place_id=? AND updated_at>=? AND server_id IN ('+placeholders+') '+
+      'GROUP BY server_id, region_code ORDER BY votes DESC, last_at DESC'
+    ).bind(placeId,Date.now()-REGION_REPORT_TTL_MS,...valid).all();
+    for(const row of rows.results||[]){
+      const key=String(row.server_id).toLowerCase();
+      const region=String(row.region_code);
+      if(!REGION_CODES[region])continue;
+      if(!result[key])result[key]={regionCode:region,region:REGION_CODES[region],votes:0,total:0,conflicted:false,reportedAt:new Date(Number(row.last_at)).toISOString()};
+      const target=result[key],votes=Number(row.votes)||0;
+      target.total+=votes;
+      if(votes>target.votes) {
+        target.regionCode=region;target.region=REGION_CODES[region];
+        target.votes=votes;target.reportedAt=new Date(Number(row.last_at)).toISOString();
+        target.conflicted=false;
+      } else if(votes===target.votes)target.conflicted=true;
+    }
+  }catch(err){console.warn('Community region reports unavailable:',String(err?.message||err));}
+  return result;
+}
+async function regionReportFetch(request,env) {
+  if(request.method!=='POST')return siteJson({error:'Method not allowed.'},405);
+  const url=new URL(request.url);
+  if(url.origin!=='https://blr.n29.kz'||request.headers.get('origin')!==url.origin)
+    return siteJson({error:'Invalid origin.'},403);
+  const profile=await accountProfile(request,env);
+  if(!profile || !/^\d{1,22}$/.test(String(profile.id||'')))return siteJson({error:'Roblox login required.',code:'login_required'},401);
+  if(!env.CUSTOMS_DB||!env.N29_SESSION_SECRET)return siteJson({error:'Reporting is temporarily unavailable.'},503);
+  let body;
+  try{body=await request.json();}catch{return siteJson({error:'Invalid report.'},400);}
+  const mode=body?.mode,serverId=body?.serverId,regionCode=body?.regionCode;
+  if(!['8v8','pro'].includes(mode)||typeof serverId!=='string'||
+    !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(serverId)||
+    !Object.hasOwn(REGION_CODES,regionCode))return siteJson({error:'Invalid report fields.'},400);
+  try{
+    const {placeId}=config(env,mode),now=Date.now();
+    // Must be a recently sampled server, and not a stale/unknown ID supplied by the client.
+    const cacheKey=`${mode}:${placeId}:${config(env,mode).pages}`;
+    const snapshot=await readDurableSnapshot(env,cacheKey)||await readSnapshot(cacheKey)||memoryCaches.get(cacheKey);
+    if(!snapshot||now-snapshot.at>10*60_000||!snapshot.servers?.some(s=>s.id.toLowerCase()===serverId.toLowerCase()))
+      return siteJson({error:'Server is not in a recent snapshot. Refresh server list.',code:'stale_server'},409);
+    const raw=await crypto.subtle.sign('HMAC',
+      await crypto.subtle.importKey('raw',new TextEncoder().encode(env.N29_SESSION_SECRET),{name:'HMAC',hash:'SHA-256'},false,['sign']),
+      new TextEncoder().encode('region-report:'+profile.id));
+    const reporter=Array.from(new Uint8Array(raw),v=>v.toString(16).padStart(2,'0')).join('');
+    // Only one report per account and server, no changing an earlier report.
+    const existing=await env.CUSTOMS_DB.prepare(
+      'SELECT region_code FROM server_region_reports WHERE place_id=? AND server_id=? AND reporter_hash=?'
+    ).bind(placeId,serverId.toLowerCase(),reporter).first();
+    if(existing)return siteJson({error:'You already reported this server.',code:'already_reported'},409);
+    // No more than 8 reports from the same account in a rolling hour.
+    const count=await env.CUSTOMS_DB.prepare(
+      'SELECT COUNT(*) AS n FROM server_region_reports WHERE reporter_hash=? AND updated_at>=?'
+    ).bind(reporter,now-3600_000).first();
+    if(Number(count?.n||0)>=8)return siteJson({error:'Hourly report limit reached.',code:'report_limit'},429);
+    await env.CUSTOMS_DB.prepare(
+      'INSERT OR IGNORE INTO server_region_reports (place_id,server_id,reporter_hash,region_code,updated_at) VALUES (?,?,?,?,?)'
+    ).bind(placeId,serverId.toLowerCase(),reporter,regionCode,now).run();
+    const summaries=await regionReportSummary(env,placeId,[serverId.toLowerCase()]);
+    return siteJson({ok:true,report:summaries[serverId.toLowerCase()]||null});
+  }catch(err){console.error('Region report failed:',String(err?.message||err));return siteJson({error:'Report could not be saved.'},503);}
+}
+
 async function websiteServers(request, env) {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode') || '8v8';
@@ -760,6 +834,7 @@ async function websiteServers(request, env) {
     for (let i=0; i<Math.min(entries.length, 60); i+=20) {
       await attachDetails(result, entries.slice(i, i+20), env);
     }
+    const communityReports=await regionReportSummary(env,result.placeId,entries.map(s=>s.id));
     const servers = entries.map(s => ({
       id: s.id, playing: s.playing, maxPlayers: s.maxPlayers,
       free: s.free, ping: s.ping, region: s.region || null,
@@ -767,6 +842,7 @@ async function websiteServers(request, env) {
       country: s.details?.country || null,
       countryCode: countryCode(s.details?.country),
       regionDiagnostic: s.regionDiagnostic || (s.region?'resolved':'not_checked'),
+      communityReport: communityReports[s.id.toLowerCase()] || null,
       version: s.details?.version ?? null,
       firstSeen: s.details?.firstSeen ?? null,
       // Join links lead to a click-to-launch page, not broken Roblox web matchmaking.
@@ -941,6 +1017,7 @@ async function registerCommand(request, env) {
 
 export default {
   async fetch(request, env, ctx) {
+    if (new URL(request.url).pathname === '/api/account/region-report') return regionReportFetch(request,env);
     if (new URL(request.url).pathname === '/api/account/region-check') return manualRegionCheck(request,env);
     const accountResponse = await accountFetch(request, env);
     if (accountResponse) return accountResponse;
