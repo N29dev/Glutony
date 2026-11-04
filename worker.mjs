@@ -911,56 +911,6 @@ async function websiteRegions(request, env) {
 }
 
 
-// Authenticated, user-initiated region retry for a single currently listed server.
-// Uses the existing D1 table as a shared per-server cooldown across Worker isolates.
-// OAuth is used for access control only; Roblox's legacy server API gains no new privileges.
-async function manualRegionCheck(request,env) {
-  if(request.method!=='POST')return siteJson({error:'Method not allowed.'},405);
-  const url=new URL(request.url);
-  if(url.origin!=='https://blr.n29.kz' || request.headers.get('origin')!==url.origin)
-    return siteJson({error:'Invalid request origin.'},403);
-  const profile=await accountProfile(request,env);
-  if(!profile)return siteJson({error:'Sign in with Roblox first.',code:'login_required'},401);
-  if(!env.CUSTOMS_DB)return siteJson({error:'Region checking is temporarily unavailable.'},503);
-  let body;
-  try{body=await request.json();}catch{return siteJson({error:'Invalid JSON.'},400);}
-  const mode=body?.mode;
-  const id=body?.serverId;
-  if(!['8v8','pro'].includes(mode) || typeof id!=='string' ||
-     !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))
-    return siteJson({error:'Invalid server selection.'},400);
-  try{
-    const result=await getServers(env,mode,false);
-    const server=result.servers.find(s=>s.id.toLowerCase()===id.toLowerCase());
-    if(!server)return siteJson({error:'Server is no longer in the current sample.'},404);
-    const key='manual-region:'+result.placeId+':'+server.id.toLowerCase();
-    const now=Date.now();
-    const row=await env.CUSTOMS_DB.prepare('SELECT updated_at FROM server_snapshots WHERE cache_key=?').bind(key).first();
-    const cooldown=90_000;
-    if(row && now-Number(row.updated_at)<cooldown)
-      return siteJson({error:'This server was checked recently. Try again later.',code:'cooldown',retryAfterSeconds:Math.ceil((cooldown-(now-Number(row.updated_at)))/1000)},429);
-    // Reserve a shared slot before making the external lookup. No private identity
-    // or authorization tokens are persisted in the cooldown record.
-    await env.CUSTOMS_DB.prepare(
-      'INSERT INTO server_snapshots (cache_key,snapshot,updated_at) VALUES (?,?,?) '+
-      'ON CONFLICT(cache_key) DO UPDATE SET snapshot=excluded.snapshot,updated_at=excluded.updated_at'
-    ).bind(key,'{}',now).run();
-    // Bypass isolate-local negative RoValra cache for this one intentional retry.
-    detailCache.delete(result.placeId+':'+server.id);
-    await attachDetails(result,[server],env);
-    const d=server.details;
-    return siteJson({serverId:server.id,checkedAt:new Date().toISOString(),
-      region:server.region||null,city:d?.city||null,state:d?.region||null,
-      country:d?.country||null,countryCode:countryCode(d?.country),
-      regionDiagnostic:server.regionDiagnostic||'not_checked',
-      version:d?.version??null,firstSeen:d?.firstSeen??null,
-      found:Boolean(server.region)});
-  }catch(err){
-    console.warn('Authenticated region lookup failed:',String(err?.message||err));
-    return siteJson({error:'Region check unavailable.'},503);
-  }
-}
-
 async function websiteHeadshots(request, env) {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode') || '8v8';
@@ -1017,7 +967,6 @@ async function registerCommand(request, env) {
 export default {
   async fetch(request, env, ctx) {
     if (new URL(request.url).pathname === '/api/account/region-report') return regionReportFetch(request,env);
-    if (new URL(request.url).pathname === '/api/account/region-check') return manualRegionCheck(request,env);
     const accountResponse = await accountFetch(request, env);
     if (accountResponse) return accountResponse;
     const techResponse = await techFetch(request, env);
