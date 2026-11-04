@@ -58,6 +58,13 @@ function safeProfile(data) {
     avatar:typeof data.picture==='string'&&/^https:\/\//.test(data.picture)?data.picture:null,
     profileUrl:'https://www.roblox.com/users/'+id+'/profile'};
 }
+// Session authentication for other same-origin account endpoints.
+export async function accountProfile(request, env) {
+  if (!env.N29_SESSION_SECRET) return null;
+  const session = await verify(cookies(request).n29_session, env.N29_SESSION_SECRET).catch(() => null);
+  return session?.profile || null;
+}
+
 export async function accountFetch(request,env) {
   const url=new URL(request.url);
   const path=url.pathname;
