@@ -241,3 +241,14 @@ See **[media-service/README.md](media-service/README.md)** for deployment,
 shared-secret configuration, upload limits and `/admin/register` steps.
 The existing `/blr` command is unchanged. Without the media service,
 `/download` responds with a configuration notice instead of pretending to work.
+
+
+## Automatic 8v8 and Pro refresh
+
+The Worker now uses a Cloudflare Cron Trigger (once per minute, alternating 8v8 and Pro) to fetch **one Roblox public-server page per tick** and save successful scans to D1. Website visits, `/blr` commands, bot stats and optional metadata lookups **read D1 snapshots** without causing extra Roblox server-list requests. Main remains on-demand and is not part of this schedule.
+
+- Samples under 5 minutes old are current; 5–15-minute samples remain available **only as explicitly labeled last-known data**. Older samples return 503 rather than listing likely closed servers.
+- Roblox HTTP 429 backoff is respected; a scan failure does not overwrite a previous good sample.
+- The existing `0005_server_snapshots.sql` migration must be applied to the remote `glutony-customs` database. No new migration is required.
+- Cloudflare Cron is configured in `wrangler.jsonc` and becomes active only when this Worker version is deployed. Check **Cloudflare → Workers & Pages → glutony → Settings → Triggers** after deployment.
+- `npm test` includes a scheduled-scan regression test. The first Cron event only populates one mode; the other mode follows on the next minute.
