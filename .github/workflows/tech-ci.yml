@@ -1,0 +1,33 @@
+name: Glutony Tech API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tech-api.mjs
+      - tech-api.test.mjs
+      - .github/workflows/tech-ci.yml
+  pull_request:
+    paths:
+      - tech-api.mjs
+      - tech-api.test.mjs
+      - .github/workflows/tech-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tech-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate worker syntax
+        run: |
+          node --check worker.mjs
+          node --check tech-api.mjs
+      - name: Test auth, persisted metadata and old entries
+        run: node --test tech-api.test.mjs
