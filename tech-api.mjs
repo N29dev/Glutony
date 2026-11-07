@@ -6,7 +6,10 @@ const TECH_ORIGIN = 'https://blr.n29.kz';
 const TECH_STATUSES = new Set(['allowed','disallowed']);
 const TECH_ID = /^[a-z0-9][a-z0-9-]{1,70}$/;
 const TECH_TEXT = /^[^<>{}\u0000-\u001f]*$/u;
-const TECH_MAX_BODY = 4096;
+const TECH_MAX_BODY = 8192;
+const TECH_RATINGS = new Set(['execution','counter','advantage','consistency','save']);
+const TECH_TAGS = new Set(['Shooting','Dribbling','Movement','Defense','Goalkeeping','Passing','Style-specific','Awakening','Ball possession','Precise timing','Specific positioning','Ping-dependent','FPS-sensitive','Server-dependent','Interceptable','GK-saveable','Timing-based','Positioning-based']);
+const TECH_COUNTERPLAY_TEXT = /^[^<>{}\u0000-\u0009\u000b-\u001f]*$/u;
 function techJson(body,status=200){
   return new Response(JSON.stringify(body),{status,headers:{
     'content-type':'application/json; charset=utf-8','cache-control':'no-store',
@@ -62,7 +65,24 @@ export function validateTechEntry(input,id){
   if(!Array.isArray(input.styles)||input.styles.length===0)return null;
   const styles=input.styles.map(style=>textField(style,48));
   if(styles.some(style=>!style)||new Set(styles).size!==styles.length)return null;
-  return {id,name,status:input.status,styles,note,video};
+  // Optional community gameplay assessments; absent fields stay genuinely unrated.
+  // Never infer or auto-create these values from moderation status.
+  const rawRatings=input.ratings??{};
+  if(typeof rawRatings!=='object'||Array.isArray(rawRatings))return null;
+  const ratings={};
+  for(const [key,value] of Object.entries(rawRatings)){
+    if(!TECH_RATINGS.has(key)||!Number.isInteger(value)||value<1||value>5)return null;
+    ratings[key]=value;
+  }
+  const rawTags=input.tags??[];
+  if(!Array.isArray(rawTags)||rawTags.length>TECH_TAGS.size||
+     rawTags.some(tag=>typeof tag!=='string'||!TECH_TAGS.has(tag))||
+     new Set(rawTags).size!==rawTags.length)return null;
+  const tags=[...rawTags];
+  if(input.counterplay!=null&&typeof input.counterplay!=='string')return null;
+  const counterplay=(input.counterplay||'').trim().replace(/\r\n?/g,'\n');
+  if(counterplay.length>1200||!TECH_COUNTERPLAY_TEXT.test(counterplay))return null;
+  return {id,name,status:input.status,styles,note,video,ratings,tags,counterplay};
 }
 export async function techFetch(request,env){
   const url=new URL(request.url);
@@ -113,7 +133,7 @@ export async function techFetch(request,env){
       let body;
       try{body=JSON.parse(raw);}catch{return techJson({error:'Invalid JSON'},400);}
       const entry=validateTechEntry(body,id);
-      if(!entry)return techJson({error:'Invalid entry: check name, status, styles, note, and YouTube URL'},400);
+      if(!entry)return techJson({error:'Invalid entry: check classification, styles, ratings, tags, counterplay, and YouTube URL'},400);
       await env.CUSTOMS_DB.prepare(
         "INSERT INTO tech_overrides (id,data,hidden,updated_at) VALUES (?,?,0,strftime('%Y-%m-%dT%H:%M:%fZ','now')) "+
         "ON CONFLICT(id) DO UPDATE SET data=excluded.data,hidden=0,updated_at=excluded.updated_at"
