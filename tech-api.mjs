@@ -7,7 +7,9 @@ const TECH_STATUSES = new Set(['allowed','disallowed']);
 const TECH_ID = /^[a-z0-9][a-z0-9-]{1,70}$/;
 const TECH_TEXT = /^[^<>{}\u0000-\u001f]*$/u;
 const TECH_MAX_BODY = 8192;
-const TECH_RATINGS = new Set(['execution','counter','advantage','consistency','save']);
+const TECH_RATINGS = new Set(['execution','counter','advantage','save']);
+// Previously saved entries may still contain consistency; accept but retire it on read/write.
+const TECH_LEGACY_RATINGS = new Set(['consistency']);
 const TECH_TAGS = new Set(['Shooting','Dribbling','Movement','Defense','Goalkeeping','Passing','Style-specific','Awakening','Ball possession','Precise timing','Specific positioning','Ping-dependent','FPS-sensitive','Server-dependent','Interceptable','GK-saveable','Timing-based','Positioning-based']);
 const TECH_COUNTERPLAY_TEXT = /^[^<>{}\u0000-\u0009\u000b-\u001f]*$/u;
 function techJson(body,status=200){
@@ -71,7 +73,9 @@ export function validateTechEntry(input,id){
   if(typeof rawRatings!=='object'||Array.isArray(rawRatings))return null;
   const ratings={};
   for(const [key,value] of Object.entries(rawRatings)){
-    if(!TECH_RATINGS.has(key)||!Number.isInteger(value)||value<1||value>5)return null;
+    if(!Number.isInteger(value)||value<1||value>5)return null;
+    if(TECH_LEGACY_RATINGS.has(key))continue;
+    if(!TECH_RATINGS.has(key))return null;
     ratings[key]=value;
   }
   const rawTags=input.tags??[];
