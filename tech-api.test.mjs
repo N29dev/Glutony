@@ -101,3 +101,36 @@ test('invalid edits, unconfigured secret, missing database, preflight',async()=>
   assert.equal(preflight.headers.get('access-control-allow-origin'),ORIGIN);
   assert.equal(await techFetch(req('/unrelated','GET',null,null),env),null);
 });
+
+test('ratings, tags and counterplay round-trip and stay optional for old entries',async()=>{
+  const env={TECH_ADMIN_KEY:SECRET,CUSTOMS_DB:dbMock()};
+  const entry={...valid,
+    ratings:{execution:4,counter:5,advantage:5,consistency:3,save:5},
+    tags:['Shooting','Precise timing','GK-saveable'],
+    counterplay:'Predict the second shot.\nDo not dive on the first fake.'
+  };
+  const result=await techFetch(req('/api/tech/admin/entry/nagi-delay-trap','PUT',entry),env);
+  assert.equal(result.status,200);
+  const received=(await (await techFetch(req('/api/tech','GET',null,null),env)).json()).entries[0];
+  assert.deepEqual(received.ratings,entry.ratings);
+  assert.deepEqual(received.tags,entry.tags);
+  assert.equal(received.counterplay,entry.counterplay);
+  const legacy=await techFetch(req('/api/tech/admin/entry/legacy-tech','PUT',valid),env);
+  assert.equal(legacy.status,200);
+  const old=(await legacy.json()).entry;
+  assert.deepEqual(old.ratings,{});
+  assert.deepEqual(old.tags,[]);
+  assert.equal(old.counterplay,'');
+});
+
+test('invalid gameplay assessments and markup are rejected',()=>{
+  assert.equal(validateTechEntry({...valid,ratings:{execution:0}},'valid-id'),null);
+  assert.equal(validateTechEntry({...valid,ratings:{counter:6}},'valid-id'),null);
+  assert.equal(validateTechEntry({...valid,ratings:{advantage:2.5}},'valid-id'),null);
+  assert.equal(validateTechEntry({...valid,ratings:{unknown:4}},'valid-id'),null);
+  assert.equal(validateTechEntry({...valid,tags:['Shooting','Shooting']},'valid-id'),null);
+  assert.equal(validateTechEntry({...valid,tags:['Injected tag']},'valid-id'),null);
+  assert.equal(validateTechEntry({...valid,counterplay:'<script>alert(1)</script>'},'valid-id'),null);
+  assert.equal(validateTechEntry({...valid,counterplay:'A'.repeat(1201)},'valid-id'),null);
+  assert.ok(validateTechEntry({...valid,ratings:{execution:3},counterplay:'Watch your position.'},'valid-id'));
+});
