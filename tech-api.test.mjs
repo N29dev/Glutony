@@ -105,7 +105,7 @@ test('invalid edits, unconfigured secret, missing database, preflight',async()=>
 test('ratings, tags and counterplay round-trip and stay optional for old entries',async()=>{
   const env={TECH_ADMIN_KEY:SECRET,CUSTOMS_DB:dbMock()};
   const entry={...valid,
-    ratings:{execution:4,counter:5,advantage:5,consistency:3,save:5},
+    ratings:{execution:4,counter:5,advantage:5,save:5},
     tags:['Shooting','Precise timing','GK-saveable'],
     counterplay:'Predict the second shot.\nDo not dive on the first fake.'
   };
@@ -113,6 +113,14 @@ test('ratings, tags and counterplay round-trip and stay optional for old entries
   assert.equal(result.status,200);
   const received=(await (await techFetch(req('/api/tech','GET',null,null),env)).json()).entries[0];
   assert.deepEqual(received.ratings,entry.ratings);
+  // A client from the older four-core-metric system can still read/write entries.
+  const legacyRated={...entry,ratings:{...entry.ratings,consistency:3}};
+  const legacyResponse=await techFetch(req('/api/tech/admin/entry/legacy-scored-tech','PUT',legacyRated),env);
+  assert.equal(legacyResponse.status,200);
+  assert.deepEqual((await legacyResponse.json()).entry.ratings,entry.ratings);
+  const legacyPublic=(await (await techFetch(req('/api/tech','GET',null,null),env)).json()).entries
+    .find(tech=>tech.id==='legacy-scored-tech');
+  assert.deepEqual(legacyPublic.ratings,entry.ratings);
   assert.deepEqual(received.tags,entry.tags);
   assert.equal(received.counterplay,entry.counterplay);
   const legacy=await techFetch(req('/api/tech/admin/entry/legacy-tech','PUT',valid),env);
