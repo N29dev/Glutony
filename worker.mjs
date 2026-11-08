@@ -1096,16 +1096,20 @@ async function sharedRegionStorageStatus(env) {
 async function websiteRegionServiceStatus(env) {
   const state = await sharedRegionStorageStatus(env);
   const secretReady = String(env.REGION_LOOKUP_HASH_KEY || env.SETUP_KEY || '').length >= 20;
+  const providerEnabled = String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() !== 'false';
+  const code = state.code !== 'ready' ? state.code
+    : !secretReady ? 'quota_secret_missing'
+    : !providerEnabled ? 'provider_disabled' : 'ready';
   return siteJson({
     service:'Glutony shared BL:R regions',
-    status:state.code,
-    providerEnabled:String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() !== 'false',
+    status:code,
+    providerEnabled,
     cacheReady:state.cacheReady,
     quotaReady:state.quotaReady,
     quotaSecretReady:secretReady,
     requiredMigrations:['0007_shared_server_regions.sql','0008_shared_region_lookup_quota.sql'],
-    note:'Region lookup is read-through only when both D1 tables and the caller quota are configured.'
-  }, state.code === 'ready' ? 200 : 503);
+    note:'Read-through lookups require both D1 tables, a 20+ character HMAC secret and the enabled external provider.'
+  }, code === 'ready' ? 200 : 503);
 }
 
 // Thirst often sees Roblox instances that are not in Glutony's own 60-server
