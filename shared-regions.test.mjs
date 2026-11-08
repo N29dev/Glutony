@@ -76,7 +76,7 @@ globalThis.fetch = async (url) => {
       country:'Brazil',datacenter_id:'PRIVATE_DC_DO_NOT_STORE',
       playerTokens:['PRIVATE_PLAYER_TOKEN_DO_NOT_STORE'],
       first_seen:'2026-11-08T00:00:00Z', place_version:52
-    }))]
+    }))
   });
 };
 
