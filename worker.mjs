@@ -328,7 +328,19 @@ async function getSharedServers(env, mode = '8v8', refresh = false) {
 // One Cron event per minute, alternating modes. Limit to one server-list page
 // per tick; the website and Discord bot do not initiate their own Roblox scans.
 async function scanScheduledServers(env, scheduledTime) {
-  const mode = new Date(scheduledTime).getUTCMinutes() % 2 === 0 ? '8v8' : 'pro';
+  // Delete expired HMAC caller pseudonyms; no raw IP addresses are persisted.
+  const tick = new Date(scheduledTime);
+  if (tick.getUTCHours() === 0 && tick.getUTCMinutes() === 0 && env.CUSTOMS_DB) {
+    try {
+      await env.CUSTOMS_DB.prepare('DELETE FROM shared_region_lookup_quota WHERE window_start < ?')
+        .bind(Date.now() - 24 * 3600_000).run();
+      await env.CUSTOMS_DB.prepare('DELETE FROM shared_server_regions WHERE expires_at < ?')
+        .bind(Date.now() - 24 * 3600_000).run();
+    } catch (error) {
+      console.warn('Expired region cache cleanup unavailable:',String(error?.message || error));
+    }
+  }
+  const mode = tick.getUTCMinutes() % 2 === 0 ? '8v8' : 'pro';
   try {
     const result = await getServers({...env, ROBLOX_MAX_PAGES: '1'}, mode, true);
     console.log('Scheduled '+mode+' sample:', result.servers.length,
@@ -1058,6 +1070,88 @@ async function websiteServers(request, env) {
 // Website background lookup: only recheck up to 8 still-active servers.
 // Frontend schedules this every ~75s while visible; positive locations cached 3 min.
 // No user/session credentials or player tokens are returned.
+// Thirst often sees Roblox instances that are not in Glutony's own 60-server
+// sample. This tightly limited public read-through endpoint checks shared D1,
+// fetches ONLY missing public BL:R UUIDs via RoValra, and caches the result for
+// the website/Discord bot. A desktop application must never contain an API key.
+const SHARED_LOOKUP_MAX_IDS = 25;
+const SHARED_LOOKUP_BUDGET_PER_MINUTE = 25;
+
+async function reserveSharedLookupBudget(request, env, count) {
+  const sourceIp = request.headers.get('cf-connecting-ip');
+  const secret = String(env.REGION_LOOKUP_HASH_KEY || env.SETUP_KEY || '');
+  if (!sourceIp || sourceIp.length > 80 || !/^[a-f\d.:]+$/i.test(sourceIp) ||
+      secret.length < 20 || !env.CUSTOMS_DB) {
+    return {allowed:false, reason:'A protected lookup quota is not configured.'};
+  }
+  try {
+    // Store only a keyed HMAC pseudonym, never a raw source address.
+    const key = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(secret), {name:'HMAC',hash:'SHA-256'}, false, ['sign']
+    );
+    const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(sourceIp));
+    const caller = [...new Uint8Array(mac)].map(x => x.toString(16).padStart(2,'0')).join('');
+    const minute = Math.floor(Date.now() / 60_000) * 60_000;
+    // SQLite's conflict update is atomic across Cloudflare Worker isolates.
+    // A rejected update changes zero rows and consumes no additional quota.
+    const result = await env.CUSTOMS_DB.prepare(
+      'INSERT INTO shared_region_lookup_quota (caller_hash, window_start, lookup_count) ' +
+      'VALUES (?, ?, ?) ON CONFLICT(caller_hash) DO UPDATE SET ' +
+      'window_start = excluded.window_start, ' +
+      'lookup_count = CASE WHEN shared_region_lookup_quota.window_start < excluded.window_start ' +
+      'THEN excluded.lookup_count ELSE shared_region_lookup_quota.lookup_count + excluded.lookup_count END ' +
+      'WHERE shared_region_lookup_quota.window_start < excluded.window_start ' +
+      'OR shared_region_lookup_quota.lookup_count + excluded.lookup_count <= ?'
+    ).bind(caller,minute,count,SHARED_LOOKUP_BUDGET_PER_MINUTE).run();
+    return {allowed:Number(result?.meta?.changes ?? result?.changes ?? 0) === 1,
+      reason:'Region lookup budget exceeded. Try again in a minute.'};
+  } catch (error) {
+    console.warn('Shared region lookup quota unavailable:', String(error?.message || error));
+    return {allowed:false, reason:'The protected region lookup is temporarily unavailable.'};
+  }
+}
+
+async function websiteUncachedRegions(request, env) {
+  const url = new URL(request.url);
+  const mode = url.searchParams.get('mode');
+  if (!mode || !MODES[mode]) return siteJson({error:'Use a supported BL:R mode.'},400);
+  if (String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() === 'false') {
+    return siteJson({error:'Optional external region lookup is disabled.'},503);
+  }
+  const input = (url.searchParams.get('ids') || '').split(',').filter(Boolean);
+  if (!input.length || input.length > SHARED_LOOKUP_MAX_IDS ||
+      input.some(id => !SHARED_REGION_ID_RE.test(id))) {
+    return siteJson({error:'Provide 1–25 valid public server IDs.'},400);
+  }
+  if (!env.CUSTOMS_DB) return siteJson({error:'Shared region cache is unavailable.'},503);
+  const ids = [...new Set(input.map(id => id.toLowerCase()))];
+  const {placeId} = config(env,mode);
+  const servers = ids.map(id => ({id}));
+  const cached = await readSharedRegionDetails(env,placeId,servers);
+  const missing = servers.filter(server => !cached.has(server.id));
+  if (missing.length) {
+    const budget = await reserveSharedLookupBudget(request,env,missing.length);
+    if (!budget.allowed) {
+      return siteJson({error:budget.reason,code:'region_lookup_limited'},429);
+    }
+  }
+  // attachDetails rechecks isolate memory + D1 and stores sanitized results
+  // from a fixed RoValra endpoint. Unknown results expire after 45 seconds.
+  await attachDetails({placeId},servers,env);
+  const regions = {};
+  for (const server of servers) {
+    const detail = server.details;
+    regions[server.id] = {
+      region:server.region || null,city:detail?.city || null,
+      state:detail?.region || null,country:detail?.country || null,
+      countryCode:countryCode(detail?.country),
+      regionDiagnostic:server.regionDiagnostic || 'not_checked',
+      version:detail?.version ?? null,firstSeen:detail?.firstSeen ?? null,
+    };
+  }
+  return siteJson({regions,checkedAt:new Date().toISOString(),source:'rovalra-via-glutony'});
+}
+
 async function websiteRegions(request, env, limit = 8) {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode') || '8v8';
@@ -1173,6 +1267,7 @@ export default {
     // Same shared D1 cache as the website and Discord; bounded to current
     // Glutony public server samples so clients cannot proxy arbitrary IDs.
     if (request.method === 'GET' && pathname === '/api/servers/regions/shared') return websiteRegions(request, env, 25);
+    if (request.method === 'GET' && pathname === '/api/servers/regions/lookup') return websiteUncachedRegions(request, env);
     if (request.method === 'GET' && pathname === '/api/servers/avatars') return websiteHeadshots(request, env);
     if (request.method === 'GET' && pathname === '/join') return joinLanding(request, env);
     if (request.method === 'POST' && pathname === '/admin/register') return registerCommand(request, env);
@@ -1191,4 +1286,4 @@ export default {
   },
 };
 
-export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanScheduledServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, readSharedRegionDetails, storeSharedRegionDetails, detailCache, COMMAND };
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanScheduledServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, readSharedRegionDetails, storeSharedRegionDetails, reserveSharedLookupBudget, websiteUncachedRegions, detailCache, COMMAND };
