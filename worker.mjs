@@ -1070,6 +1070,44 @@ async function websiteServers(request, env) {
 // Website background lookup: only recheck up to 8 still-active servers.
 // Frontend schedules this every ~75s while visible; positive locations cached 3 min.
 // No user/session credentials or player tokens are returned.
+// Public, redacted deployment diagnostics. A new Worker can deploy before its
+// D1 migrations; in that situation cache-miss requests must NOT silently
+// pretend their RoValra results have been stored for the website and bot.
+async function sharedRegionStorageStatus(env) {
+  if (!env.CUSTOMS_DB) return {cacheReady:false,quotaReady:false,code:'d1_not_configured'};
+  const check = async sql => {
+    try {
+      await env.CUSTOMS_DB.prepare(sql).all();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const [cacheReady,quotaReady] = await Promise.all([
+    check('SELECT place_id FROM shared_server_regions LIMIT 0'),
+    check('SELECT caller_hash FROM shared_region_lookup_quota LIMIT 0')
+  ]);
+  return {
+    cacheReady,quotaReady,
+    code:cacheReady && quotaReady ? 'ready' : 'migrations_required'
+  };
+}
+
+async function websiteRegionServiceStatus(env) {
+  const state = await sharedRegionStorageStatus(env);
+  const secretReady = String(env.REGION_LOOKUP_HASH_KEY || env.SETUP_KEY || '').length >= 20;
+  return siteJson({
+    service:'Glutony shared BL:R regions',
+    status:state.code,
+    providerEnabled:String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() !== 'false',
+    cacheReady:state.cacheReady,
+    quotaReady:state.quotaReady,
+    quotaSecretReady:secretReady,
+    requiredMigrations:['0007_shared_server_regions.sql','0008_shared_region_lookup_quota.sql'],
+    note:'Region lookup is read-through only when both D1 tables and the caller quota are configured.'
+  }, state.code === 'ready' ? 200 : 503);
+}
+
 // Thirst often sees Roblox instances that are not in Glutony's own 60-server
 // sample. This tightly limited public read-through endpoint checks shared D1,
 // fetches ONLY missing public BL:R UUIDs via RoValra, and caches the result for
@@ -1123,7 +1161,15 @@ async function websiteUncachedRegions(request, env) {
       input.some(id => !SHARED_REGION_ID_RE.test(id))) {
     return siteJson({error:'Provide 1–25 valid public server IDs.'},400);
   }
-  if (!env.CUSTOMS_DB) return siteJson({error:'Shared region cache is unavailable.'},503);
+  if (!env.CUSTOMS_DB) return siteJson({error:'Shared region cache is unavailable.',code:'d1_not_configured'},503);
+  const readiness = await sharedRegionStorageStatus(env);
+  if (readiness.code !== 'ready') {
+    return siteJson({
+      error:'The shared region cache and quota migrations must be applied in Cloudflare D1 before new regions can be saved.',
+      code:readiness.code,
+      requiredMigrations:['0007_shared_server_regions.sql','0008_shared_region_lookup_quota.sql']
+    },503);
+  }
   const ids = [...new Set(input.map(id => id.toLowerCase()))];
   const {placeId} = config(env,mode);
   const servers = ids.map(id => ({id}));
@@ -1149,7 +1195,21 @@ async function websiteUncachedRegions(request, env) {
       version:detail?.version ?? null,firstSeen:detail?.firstSeen ?? null,
     };
   }
-  return siteJson({regions,checkedAt:new Date().toISOString(),source:'rovalra-via-glutony'});
+  // Read the database after enrichment, rather than claiming success based
+  // on what was returned by RoValra. This distinguishes live response data
+  // from a result that the website/Discord can actually reuse.
+  const after = await readSharedRegionDetails(env,placeId,servers);
+  const savedCount = servers.filter(server => after.has(server.id)).length;
+  const resolvedCount = servers.filter(server => {
+    const detail = regions[server.id];
+    return Boolean(detail.country || detail.city || detail.state);
+  }).length;
+  return siteJson({
+    regions,checkedAt:new Date().toISOString(),source:'rovalra-via-glutony',
+    cache:{persistedCount:savedCount,requestedCount:servers.length,
+      foundCount:resolvedCount,unknownCount:servers.length-resolvedCount,
+      allPersisted:savedCount===servers.length,missesRetried:missing.length}
+  });
 }
 
 async function websiteRegions(request, env, limit = 8) {
@@ -1268,6 +1328,7 @@ export default {
     // Glutony public server samples so clients cannot proxy arbitrary IDs.
     if (request.method === 'GET' && pathname === '/api/servers/regions/shared') return websiteRegions(request, env, 25);
     if (request.method === 'GET' && pathname === '/api/servers/regions/lookup') return websiteUncachedRegions(request, env);
+    if (request.method === 'GET' && pathname === '/api/servers/regions/status') return websiteRegionServiceStatus(env);
     if (request.method === 'GET' && pathname === '/api/servers/avatars') return websiteHeadshots(request, env);
     if (request.method === 'GET' && pathname === '/join') return joinLanding(request, env);
     if (request.method === 'POST' && pathname === '/admin/register') return registerCommand(request, env);
@@ -1286,4 +1347,4 @@ export default {
   },
 };
 
-export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanScheduledServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, readSharedRegionDetails, storeSharedRegionDetails, reserveSharedLookupBudget, websiteUncachedRegions, detailCache, COMMAND };
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanScheduledServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, readSharedRegionDetails, storeSharedRegionDetails, sharedRegionStorageStatus, reserveSharedLookupBudget, websiteUncachedRegions, detailCache, COMMAND };
