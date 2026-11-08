@@ -11,9 +11,7 @@ const oldFetch = globalThis.fetch;
 
 const db = {
   prepare(sql) {
-    return {
-      bind(...args) {
-        return {
+    const bound = (...args) => ({
           async all() {
             if (!sql.includes('FROM shared_server_regions')) return {results:[]};
             const [place, now, ...ids] = args;
@@ -49,8 +47,11 @@ const db = {
             });
             return {success:true};
           }
-        };
-      }
+    });
+    return {
+      bind(...args) { return bound(...args); },
+      async all() { return bound().all(); },
+      async first() { return bound().first(); },
     };
   },
   async batch(statements) {
@@ -127,6 +128,14 @@ try {
   assert.deepEqual((await unknown.json()).regions,{});
   assert.equal(upstreamCalls,1,'Unlisted public IDs cannot proxy requests');
 
+  const status = await worker.fetch(new Request(
+    'https://glutony.example/api/servers/regions/status'
+  ),env,{});
+  assert.equal(status.status,200);
+  const statusBody = await status.json();
+  assert.equal(statusBody.cacheReady,true);
+  assert.equal(statusBody.quotaReady,true);
+
   // A valid live Roblox UUID need not be in Glutony's own 60-server sample.
   // The guarded read-through endpoint fetches via RoValra and persists it.
   const outsideSample = '550e8400-e29b-41d4-a716-446655440002';
@@ -137,6 +146,10 @@ try {
   const recoveredBody = await recovered.json();
   assert.equal(recoveredBody.regions[outsideSample].city,'São Paulo');
   assert.ok(rows.has(placeId + ':' + outsideSample), 'Unsampled region written to shared D1');
+  assert.equal(recoveredBody.cache.allPersisted,true);
+  assert.equal(recoveredBody.cache.foundCount,1);
+  assert.equal(recoveredBody.cache.persistedCount,1);
+
   assert.equal(upstreamCalls,2,'Only the miss is sent to RoValra');
 
   const cachedAgain = await worker.fetch(
