@@ -533,7 +533,8 @@ async function readSharedRegionDetails(env, placeId, servers) {
 }
 async function storeSharedRegionDetails(env, placeId, entries) {
   if (!env.CUSTOMS_DB || !entries.length) return;
-  const now = Date.now();
+  try {
+    const now = Date.now();
   const statements = entries.slice(0, SHARED_REGION_MAX_BATCH).flatMap(entry => {
     const id = String(entry.id || '').toLowerCase();
     if (!SHARED_REGION_ID_RE.test(id)) return [];
@@ -550,7 +551,6 @@ async function storeSharedRegionDetails(env, placeId, entries) {
     ).bind(String(placeId), id, JSON.stringify({details,reason}), now, expiresAt)];
   });
   if (!statements.length) return;
-  try {
     if (typeof env.CUSTOMS_DB.batch === 'function') await env.CUSTOMS_DB.batch(statements);
     else await Promise.all(statements.map(stmt => stmt.run()));
   } catch (error) {
