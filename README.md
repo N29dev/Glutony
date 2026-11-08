@@ -152,7 +152,15 @@ The Worker now supports a **short-lived D1 cache of RoValra region observations*
 - **Cache:** only sanitized city, state/region, country, optional version/first-seen metadata, a diagnostic reason, public Roblox place/server IDs, and observation/expiry timestamps are persisted. Positive region entries expire after **3 minutes**, missing results after **45 seconds**. No Roblox cookies, player tokens, account identifiers, full upstream response bodies, IP addresses or datacenter IDs are stored.
 - **Provider:** RoValra is independent and credited in existing website/bot UI. Sharing a cache does not grant extra rights to redistribute or use its data; review [RoValra's API terms](https://www.rovalra.com/tou/) and disable `ROVALRA_REGIONS_ENABLED` if access is denied or they request removal.
 
-**Required one-time deployment step:** Both `0007_shared_server_regions.sql` and `0008_shared_region_lookup_quota.sql` must be applied to the existing Cloudflare D1 database. GitHub deployment of `worker.mjs` alone does **not** apply migrations:
+**Required one-time deployment step:** Both `0007_shared_server_regions.sql` and `0008_shared_region_lookup_quota.sql` must be applied to the existing Cloudflare D1 database. This is not automatic when GitHub deploys the Worker. If only one region appears in Thirst, first verify that the live Worker actually has both tables.
+
+Check the live Worker after deploying:
+
+[Glutony region-cache status](https://glutony.scp343hey.workers.dev/api/servers/regions/status)
+
+This public, read-only endpoint returns `cacheReady`, `quotaReady`, and `quotaSecretReady` without exposing secrets. **Both cache and quota must be true** before new regions can be saved; the secret readiness must also be true for protected cache misses. If it reports `migrations_required`, apply migrations to the Cloudflare D1 database and redeploy if necessary.
+
+The `GET /api/servers/regions/lookup` endpoint now includes a `cache` summary with `requestedCount`, `foundCount`, `unknownCount`, `persistedCount`, `allPersisted`, and `missesRetried`. This explicitly distinguishes data merely returned by RoValra from data persisted for the website and bot. A missing migration produces a clear HTTP 503 rather than a misleading successful region lookup. GitHub deployment of `worker.mjs` alone does **not** apply migrations:
 
 ```bash
 npx wrangler d1 migrations apply glutony-customs --remote
@@ -171,6 +179,7 @@ The public website at [blr.n29.kz/servers/](https://blr.n29.kz/servers/) uses th
 - `GET /api/servers/avatars?mode=pro&id=<public-job-uuid>` (optional player preview images)
 - `GET /api/servers/regions?mode=8v8&ids=<comma-separated-Job-IDs>` — lightweight passive recheck for 1–8 active public instances; returns any newly known regions and metadata
 - `GET /api/servers/regions/shared?mode=8v8&ids=<comma-separated-Job-IDs>` — bounded recheck of up to 25 currently sampled public BL:R instances (legacy sample-only endpoint)
+- `GET /api/servers/regions/status` — public read-only migration/quota readiness (no credentials or sensitive details)
 - `GET /api/servers/regions/lookup?mode=8v8&ids=<comma-separated-Job-IDs>` — bounded shared D1 cache-miss lookup for up to 25 **arbitrary public BL:R instance UUIDs**. For uncached valid IDs, the Worker fetches RoValra metadata and stores sanitized results with short TTL. It requires a valid Cloudflare-provided source IP, existing Worker HMAC secret, and the quota-table migration; never send an authorization token.
 
 The website only retries **unknown** regions, approximately once every 75 seconds while open and visible, up to five background checks per page load.
