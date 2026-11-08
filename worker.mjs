@@ -468,6 +468,96 @@ function applyDetail(server, data, missingReason='no_server_record') {
   server.region = data.location || null;
 }
 
+// Durable, short-lived, shared RoValra location cache. Successful details
+// found through Thirst, website or Discord become available to all three.
+// Stores only whitelisted public region data; NEVER tokens/IPs/datacenter IDs.
+const SHARED_REGION_POSITIVE_TTL_MS = 180_000;
+const SHARED_REGION_NEGATIVE_TTL_MS = 45_000;
+const SHARED_REGION_MAX_BATCH = 25;
+const SHARED_REGION_ID_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+function sanitizedSharedRegionDetail(details) {
+  if (!details) return null;
+  const city = knownLocation(details.city);
+  const region = knownLocation(details.region);
+  const country = knownLocation(details.country);
+  const version = Number(details.version);
+  const firstSeen = typeof details.firstSeen === 'string' && details.firstSeen.length <= 40 ?
+    details.firstSeen : null;
+  const diagnostic = ['resolved', 'resolved_datacenter', 'no_server_record',
+    'no_datacenter_id', 'datacenter_unmapped', 'datacenter_lookup_failed',
+    'rovalra_error', 'not_checked'].includes(details.regionDiagnostic)
+    ? details.regionDiagnostic : 'not_checked';
+  // Never store details.datacenterId or any upstream raw payload.
+  return {
+    city, region, country,
+    version: Number.isSafeInteger(version) && version > 0 && version < 1e9 ? version : null,
+    firstSeen,
+    regionDiagnostic: diagnostic,
+  };
+}
+async function readSharedRegionDetails(env, placeId, servers) {
+  const resolved = new Map();
+  if (!env.CUSTOMS_DB || !servers.length) return resolved;
+  const ids = [...new Set(servers.slice(0, SHARED_REGION_MAX_BATCH)
+    .map(s => String(s.id || '').toLowerCase()).filter(id => SHARED_REGION_ID_RE.test(id)))];
+  if (!ids.length) return resolved;
+  try {
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await env.CUSTOMS_DB.prepare(
+      'SELECT server_id, details_json, expires_at FROM shared_server_regions ' +
+      'WHERE place_id = ? AND expires_at > ? AND server_id IN (' + placeholders + ')'
+    ).bind(String(placeId), Date.now(), ...ids).all();
+    for (const row of rows.results || []) {
+      const id = String(row.server_id || '').toLowerCase();
+      if (!ids.includes(id)) continue;
+      let stored;
+      try { stored = JSON.parse(row.details_json); } catch { continue; }
+      if (!stored || typeof stored !== 'object') continue;
+      const saved = sanitizedSharedRegionDetail(stored.details);
+      const detail = saved ? {
+        ...saved,
+        location: locationFromDetail(saved)
+      } : null;
+      resolved.set(id, { details: detail, reason:
+        typeof stored.reason === 'string' && /^[a-z_]{1,32}$/.test(stored.reason) ?
+          stored.reason : 'no_server_record',
+        expiresAt: Number(row.expires_at) });
+    }
+  } catch (error) {
+    // A deployment may precede the D1 migration. Keep the existing live
+    // provider path working until the migration is applied.
+    console.warn('Shared region cache read unavailable:', String(error?.message || error));
+  }
+  return resolved;
+}
+async function storeSharedRegionDetails(env, placeId, entries) {
+  if (!env.CUSTOMS_DB || !entries.length) return;
+  const now = Date.now();
+  const statements = entries.slice(0, SHARED_REGION_MAX_BATCH).flatMap(entry => {
+    const id = String(entry.id || '').toLowerCase();
+    if (!SHARED_REGION_ID_RE.test(id)) return [];
+    const details = sanitizedSharedRegionDetail(entry.details);
+    const reason = typeof entry.reason === 'string' && /^[a-z_]{1,32}$/.test(entry.reason) ?
+      entry.reason : 'no_server_record';
+    const expiresAt = now + (details && locationFromDetail(details) ?
+      SHARED_REGION_POSITIVE_TTL_MS : SHARED_REGION_NEGATIVE_TTL_MS);
+    return [env.CUSTOMS_DB.prepare(
+      'INSERT INTO shared_server_regions ' +
+      '(place_id, server_id, details_json, observed_at, expires_at) VALUES (?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(place_id, server_id) DO UPDATE SET ' +
+      'details_json=excluded.details_json, observed_at=excluded.observed_at, expires_at=excluded.expires_at'
+    ).bind(String(placeId), id, JSON.stringify({details,reason}), now, expiresAt)];
+  });
+  if (!statements.length) return;
+  try {
+    if (typeof env.CUSTOMS_DB.batch === 'function') await env.CUSTOMS_DB.batch(statements);
+    else await Promise.all(statements.map(stmt => stmt.run()));
+  } catch (error) {
+    console.warn('Shared region cache write unavailable:', String(error?.message || error));
+  }
+}
+
 async function attachDetails(result, servers, env) {
   if (String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() === 'false') {
     for (const server of servers) server.regionDiagnostic='disabled';
@@ -481,9 +571,21 @@ async function attachDetails(result, servers, env) {
     else missing.push(server);
   }
   if (!missing.length) return;
+  const shared = await readSharedRegionDetails(env, result.placeId, missing);
+  const notInD1 = [];
+  for (const server of missing) {
+    const entry = shared.get(server.id.toLowerCase());
+    if (entry && entry.expiresAt > now) {
+      applyDetail(server, entry.details, entry.reason);
+      detailCache.set(`${result.placeId}:${server.id}`, {
+        details: entry.details, reason: entry.reason, expiry: entry.expiresAt
+      });
+    } else notInD1.push(server);
+  }
+  if (!notInD1.length) return;
   const url = new URL('https://apis.rovalra.com/v1/servers/details');
   url.searchParams.set('place_id', result.placeId);
-  url.searchParams.set('server_ids', missing.map(s => s.id).join(','));
+  url.searchParams.set('server_ids', notInD1.map(s => s.id).join(','));
   try {
     const response = await fetch(url.toString(), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(3500) });
     if (!response.ok) throw new Error(`RoValra HTTP ${response.status}`);
@@ -506,20 +608,24 @@ async function attachDetails(result, servers, env) {
       });
     }
     await enrichMissingDatacenterDetails(found);
-    for (const server of missing) {
+    const sharedWrites = [];
+    for (const server of notInD1) {
       const details = found.get(server.id) || null;
       applyDetail(server, details, 'no_server_record');
       // Server metadata may arrive before RoValra learns its location. Retry missing
       // regions sooner, even when version and first_seen are already present.
       const lifetime = details?.location ? 180_000 : 45_000;
       detailCache.set(`${result.placeId}:${server.id}`, {details, reason:details?.regionDiagnostic||'no_server_record', expiry: now + lifetime});
+      sharedWrites.push({id:server.id, details, reason:details?.regionDiagnostic||'no_server_record'});
     }
+    await storeSharedRegionDetails(env, result.placeId, sharedWrites);
   } catch (err) {
     console.warn('Optional RoValra details failed:', String(err?.message || err));
-    for (const server of missing) {
+    for (const server of notInD1) {
       applyDetail(server, null, 'rovalra_error');
       detailCache.set(`${result.placeId}:${server.id}`, {details:null, reason:'rovalra_error', expiry:now + 30_000});
     }
+    // Do not persist transient connection failures as authoritative misses.
   }
   if (detailCache.size > 800) detailCache.clear();
 }
@@ -952,14 +1058,14 @@ async function websiteServers(request, env) {
 // Website background lookup: only recheck up to 8 still-active servers.
 // Frontend schedules this every ~75s while visible; positive locations cached 3 min.
 // No user/session credentials or player tokens are returned.
-async function websiteRegions(request, env) {
+async function websiteRegions(request, env, limit = 8) {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode') || '8v8';
   if (!MODES[mode]) return siteJson({error:'Unknown mode.'}, 400);
   const rawIds = (url.searchParams.get('ids') || '').split(',').filter(Boolean);
-  if (!rawIds.length || rawIds.length > 8 ||
+  if (!rawIds.length || rawIds.length > limit ||
       rawIds.some(id => !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))) {
-    return siteJson({error:'Provide 1–8 valid server IDs.'}, 400);
+    return siteJson({error:`Provide 1–${limit} valid server IDs.`}, 400);
   }
   try {
     const result = await getSharedServers(env, mode, false);
@@ -1064,6 +1170,9 @@ export default {
     }
     if (request.method === 'GET' && pathname === '/api/servers') return websiteServers(request, env);
     if (request.method === 'GET' && pathname === '/api/servers/regions') return websiteRegions(request, env);
+    // Same shared D1 cache as the website and Discord; bounded to current
+    // Glutony public server samples so clients cannot proxy arbitrary IDs.
+    if (request.method === 'GET' && pathname === '/api/servers/regions/shared') return websiteRegions(request, env, 25);
     if (request.method === 'GET' && pathname === '/api/servers/avatars') return websiteHeadshots(request, env);
     if (request.method === 'GET' && pathname === '/join') return joinLanding(request, env);
     if (request.method === 'POST' && pathname === '/admin/register') return registerCommand(request, env);
@@ -1082,4 +1191,4 @@ export default {
   },
 };
 
-export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanScheduledServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, COMMAND };
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanScheduledServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, readSharedRegionDetails, storeSharedRegionDetails, detailCache, COMMAND };
