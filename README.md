@@ -140,6 +140,26 @@ The landing page validates the configured BL:R place and UUID-shaped Job ID. It 
 
 Relevant docs: https://create.roblox.com/docs/production/promotion/deeplinks and reported bug https://devforum.roblox.com/t/deep-link-ignores-gameinstanceid-argument/3815549
 
+## Shared region cache for Thirst, website and Discord
+
+The Worker now supports a **short-lived D1 cache of RoValra region observations** so that the three N29 clients can reuse a previously resolved Roblox server location. This extends the existing shared `server_snapshots` mechanism; it does not change the public server sampling or Discord command schema.
+
+- **Thirst** checks `GET /api/servers/regions/shared?mode=8v8&ids=UUID[,UUID...]` for BL:R Main/8v8/Pro servers before its existing direct RoValra fallback. The shared endpoint accepts **1–25** UUIDs and only resolves IDs that are in Glutony's recent public server snapshot for that mode. It does not proxy arbitrary user-supplied Roblox server IDs.
+- **Website:** its existing `GET /api/servers` and `GET /api/servers/regions` paths call the same cached region lookup; no website source changes are required.
+- **Discord bot:** its existing region enrichment uses the same function and shared cache. Old Discord messages do not automatically update, but newly opened/refreshed results benefit from cached observations.
+- **Cache:** only sanitized city, state/region, country, optional version/first-seen metadata, a diagnostic reason, public Roblox place/server IDs, and observation/expiry timestamps are persisted. Positive region entries expire after **3 minutes**, missing results after **45 seconds**. No Roblox cookies, player tokens, account identifiers, full upstream response bodies, IP addresses or datacenter IDs are stored.
+- **Provider:** RoValra is independent and credited in existing website/bot UI. Sharing a cache does not grant extra rights to redistribute or use its data; review [RoValra's API terms](https://www.rovalra.com/tou/) and disable `ROVALRA_REGIONS_ENABLED` if access is denied or they request removal.
+
+**Required one-time deployment step:** The new `0007_shared_server_regions.sql` migration must be applied to the existing Cloudflare D1 database. GitHub deployment of `worker.mjs` alone does **not** apply migrations:
+
+```bash
+npx wrangler d1 migrations apply glutony-customs --remote
+```
+
+Use a Cloudflare-authenticated terminal or your existing secure CI deployment. **Do not copy a Cloudflare API token into Thirst, the website, Discord, a URL or this public repository.** A native desktop application cannot safely keep a shared secret. The endpoint is intentionally read-only, limited to current public sampled server UUIDs, and sends no credentials to RoValra.
+
+Until the migration is applied, region lookups continue using the old in-memory cache and direct RoValra requests. D1 read/write failures are non-fatal and are not surfaced as Roblox login errors. A successfully applied migration enables cross-isolate reuse, subject to cache expiry.
+
 ## Website server browser API
 
 The public website at [blr.n29.kz/servers/](https://blr.n29.kz/servers/) uses the same Worker as the Discord bot. Endpoints:
@@ -148,6 +168,7 @@ The public website at [blr.n29.kz/servers/](https://blr.n29.kz/servers/) uses th
 - `GET /api/servers?mode=pro`
 - `GET /api/servers/avatars?mode=pro&id=<public-job-uuid>` (optional player preview images)
 - `GET /api/servers/regions?mode=8v8&ids=<comma-separated-Job-IDs>` — lightweight passive recheck for 1–8 active public instances; returns any newly known regions and metadata
+- `GET /api/servers/regions/shared?mode=8v8&ids=<comma-separated-Job-IDs>` — bounded read-through shared D1 region lookup for up to 25 currently sampled public BL:R instances; usable from Thirst without an embedded API token
 
 The website only retries **unknown** regions, approximately once every 75 seconds while open and visible, up to five background checks per page load.
 - If RoValra's `/v1/servers/details` knows a `datacenter_id` but doesn't yet provide a city or country, Glutony now optionally looks up that **exact** ID in RoValra's public `/v1/datacenters/list` map (cached for 10 minutes). Unknown and ambiguous IDs remain unresolved.
