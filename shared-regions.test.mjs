@@ -172,6 +172,12 @@ try {
 
   // Deployment with the Worker code but without the quota-table migration
   // must not silently fetch RoValra and pretend the result was cached.
+  const noQuotaSecret = await worker.fetch(new Request(
+    'https://glutony.example/api/servers/regions/status'
+  ),{...env, SETUP_KEY:''},{});
+  assert.equal(noQuotaSecret.status,503);
+  assert.equal((await noQuotaSecret.json()).status,'quota_secret_missing');
+
   const dbBeforeMigration = {
     ...db,
     prepare(sql) {
