@@ -170,6 +170,35 @@ try {
   assert.ok(quotas.size===1,'Only pseudonymous caller hash is stored');
   assert.ok(![...quotas.keys()][0].includes('203.0.113'),'Raw IP is not retained');
 
+  // Deployment with the Worker code but without the quota-table migration
+  // must not silently fetch RoValra and pretend the result was cached.
+  const dbBeforeMigration = {
+    ...db,
+    prepare(sql) {
+      if (sql.includes('shared_region_lookup_quota')) {
+        throw new Error('no such table: shared_region_lookup_quota');
+      }
+      return db.prepare(sql);
+    }
+  };
+  const missingMigrationEnv = {...env, CUSTOMS_DB:dbBeforeMigration};
+  const migrations = await worker.fetch(
+    new Request('https://glutony.example/api/servers/regions/status'),
+    missingMigrationEnv,{}
+  );
+  assert.equal(migrations.status,503);
+  const migrationsBody = await migrations.json();
+  assert.equal(migrationsBody.cacheReady,true);
+  assert.equal(migrationsBody.quotaReady,false);
+  const blockedNew = await worker.fetch(new Request(
+    'https://glutony.example/api/servers/regions/lookup?mode=8v8&ids=' +
+    '550e8400-e29b-41d4-a716-446655440005',
+    {headers:protectedHeaders}
+  ),missingMigrationEnv,{});
+  assert.equal(blockedNew.status,503);
+  assert.equal((await blockedNew.json()).code,'migrations_required');
+  assert.equal(upstreamCalls,2,'Missing migrations must not make unpersisted upstream requests');
+
   const missingSource = await worker.fetch(
     new Request('https://glutony.example/api/servers/regions/lookup?mode=8v8&ids=' +
       '550e8400-e29b-41d4-a716-446655440003'),env,{}
