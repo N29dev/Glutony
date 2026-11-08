@@ -144,21 +144,23 @@ Relevant docs: https://create.roblox.com/docs/production/promotion/deeplinks and
 
 The Worker now supports a **short-lived D1 cache of RoValra region observations** so that the three N29 clients can reuse a previously resolved Roblox server location. This extends the existing shared `server_snapshots` mechanism; it does not change the public server sampling or Discord command schema.
 
-- **Thirst** checks `GET /api/servers/regions/shared?mode=8v8&ids=UUID[,UUID...]` for BL:R Main/8v8/Pro servers before its existing direct RoValra fallback. The shared endpoint accepts **1–25** UUIDs and only resolves IDs that are in Glutony's recent public server snapshot for that mode. It does not proxy arbitrary user-supplied Roblox server IDs.
+- **Thirst** now checks `GET /api/servers/regions/lookup?mode=8v8&ids=UUID[,UUID...]` for BL:R Main/8v8/Pro servers. This **cache-miss lookup** accepts **1–25** public UUIDs even when they are missing from Glutony's own sampled server list. It reads D1 first; on a miss, the Worker asks RoValra and stores sanitized, short-lived results for the website and Discord bot. Thirst retains direct RoValra fallback when Glutony cannot answer.
+- **Protection:** The new endpoint accepts only the three configured BL:R modes, never arbitrary URLs or place IDs. Missing entries are limited to **25 IDs per 60 seconds per source**, using a D1 atomic quota keyed by an HMAC pseudonym of the request IP, generated with the existing `SETUP_KEY` or optional `REGION_LOOKUP_HASH_KEY`. Raw IPs are never persisted, and the pseudonyms are cleaned up after a day. Requests without a valid caller IP or configured secret cannot trigger uncached upstream lookups. This is best-effort abuse protection; add Cloudflare WAF rate limits if public traffic grows.
+- The existing `GET /api/servers/regions/shared` endpoint remains **sample-only** for lightweight legacy reads.
 - **Website:** its existing `GET /api/servers` and `GET /api/servers/regions` paths call the same cached region lookup; no website source changes are required.
 - **Discord bot:** its existing region enrichment uses the same function and shared cache. Old Discord messages do not automatically update, but newly opened/refreshed results benefit from cached observations.
 - **Cache:** only sanitized city, state/region, country, optional version/first-seen metadata, a diagnostic reason, public Roblox place/server IDs, and observation/expiry timestamps are persisted. Positive region entries expire after **3 minutes**, missing results after **45 seconds**. No Roblox cookies, player tokens, account identifiers, full upstream response bodies, IP addresses or datacenter IDs are stored.
 - **Provider:** RoValra is independent and credited in existing website/bot UI. Sharing a cache does not grant extra rights to redistribute or use its data; review [RoValra's API terms](https://www.rovalra.com/tou/) and disable `ROVALRA_REGIONS_ENABLED` if access is denied or they request removal.
 
-**Required one-time deployment step:** The new `0007_shared_server_regions.sql` migration must be applied to the existing Cloudflare D1 database. GitHub deployment of `worker.mjs` alone does **not** apply migrations:
+**Required one-time deployment step:** Both `0007_shared_server_regions.sql` and `0008_shared_region_lookup_quota.sql` must be applied to the existing Cloudflare D1 database. GitHub deployment of `worker.mjs` alone does **not** apply migrations:
 
 ```bash
 npx wrangler d1 migrations apply glutony-customs --remote
 ```
 
-Use a Cloudflare-authenticated terminal or your existing secure CI deployment. **Do not copy a Cloudflare API token into Thirst, the website, Discord, a URL or this public repository.** A native desktop application cannot safely keep a shared secret. The endpoint is intentionally read-only, limited to current public sampled server UUIDs, and sends no credentials to RoValra.
+Use a Cloudflare-authenticated terminal or your existing secure CI deployment. **Do not copy a Cloudflare API token into Thirst, the website, Discord, a URL or this public repository.** A native desktop application cannot safely keep a shared secret. The lookup endpoint is read-only but can trigger a tightly quota-limited, fixed-host RoValra lookup; it never accepts client-provided region values and sends no Roblox or Discord credentials to RoValra.
 
-Until the migration is applied, region lookups continue using the old in-memory cache and direct RoValra requests. D1 read/write failures are non-fatal and are not surfaced as Roblox login errors. A successfully applied migration enables cross-isolate reuse, subject to cache expiry.
+Until both migrations are applied, Thirst's uncached shared lookup fails closed and falls back directly to RoValra; the website/Discord region enrichment continues using its old in-memory cache and upstream lookup. D1 read/write failures are non-fatal and are not surfaced as Roblox login errors. A successfully applied migration enables cross-isolate reuse, subject to cache expiry.
 
 ## Website server browser API
 
@@ -168,7 +170,8 @@ The public website at [blr.n29.kz/servers/](https://blr.n29.kz/servers/) uses th
 - `GET /api/servers?mode=pro`
 - `GET /api/servers/avatars?mode=pro&id=<public-job-uuid>` (optional player preview images)
 - `GET /api/servers/regions?mode=8v8&ids=<comma-separated-Job-IDs>` — lightweight passive recheck for 1–8 active public instances; returns any newly known regions and metadata
-- `GET /api/servers/regions/shared?mode=8v8&ids=<comma-separated-Job-IDs>` — bounded read-through shared D1 region lookup for up to 25 currently sampled public BL:R instances; usable from Thirst without an embedded API token
+- `GET /api/servers/regions/shared?mode=8v8&ids=<comma-separated-Job-IDs>` — bounded recheck of up to 25 currently sampled public BL:R instances (legacy sample-only endpoint)
+- `GET /api/servers/regions/lookup?mode=8v8&ids=<comma-separated-Job-IDs>` — bounded shared D1 cache-miss lookup for up to 25 **arbitrary public BL:R instance UUIDs**. For uncached valid IDs, the Worker fetches RoValra metadata and stores sanitized results with short TTL. It requires a valid Cloudflare-provided source IP, existing Worker HMAC secret, and the quota-table migration; never send an authorization token.
 
 The website only retries **unknown** regions, approximately once every 75 seconds while open and visible, up to five background checks per page load.
 - If RoValra's `/v1/servers/details` knows a `datacenter_id` but doesn't yet provide a city or country, Glutony now optionally looks up that **exact** ID in RoValra's public `/v1/datacenters/list` map (cached for 10 minutes). Unknown and ambiguous IDs remain unresolved.
