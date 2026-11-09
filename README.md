@@ -298,3 +298,11 @@ With the Cloudflare Worker variable `ROVALRA_MATCH_DISCOVERY_ENABLED=true`, webs
 - Before enabling the flag, apply `migrations/0010_rovalra_discovery.sql` to production D1. If RoValra blocks, disables, or rate-limits requests, stop and honor their terms. To roll back, set `ROVALRA_MATCH_DISCOVERY_ENABLED=false` without removing the older Roblox scanner or cached snapshots.
 - This is a BL:R-focused experimental integration. RoValra's API [terms](https://www.rovalra.com/tou/) prohibit scraping and replacement of their extension; [credit RoValra](https://www.rovalra.com/) and request permission if broader redistribution is needed.
 
+
+## Optional Roblox occupancy overlay
+
+When `ROVALRA_MATCH_DISCOVERY_ENABLED=true` and `ROBLOX_HYBRID_ENRICH_ENABLED=true`, RoValra remains the primary BL:R 8v8/Pro Job-ID discovery source. A **best-effort** Roblox public-server scan is launched in a Cloudflare `waitUntil` task on occasional website or Discord list reads, **no more than once every 20 minutes globally** for both game modes (shared D1 scan gate). It fetches a single page and honors Roblox HTTP 429 backoff. Requests do not block the server list and never retry immediately during a provider cooldown.
+
+Only exact Job-ID matches from a successful `server_snapshots` sample that is **at most five minutes old** acquire `playing`, `maxPlayers`, `free`, `ping`, `occupancyVerified` and `occupancyUpdatedAt`. All unmatched IDs retain null counts. The response exposes `enrichedCount` and `enrichmentSampleAt` for diagnostics. Server player counts may change immediately and this is not a per-instance endpoint; a one-page scan is likely to match only a subset. It does not prove continued server availability.
+
+Disable the overlay instantly by setting `ROBLOX_HYBRID_ENRICH_ENABLED=false`; this has no impact on RoValra discovery or its D1 cache. No additional D1 migration is needed: reuse `server_scan_gate` (migration 0009) and `server_snapshots` (migration 0005). Use only public API responses and do not bypass Roblox restrictions.

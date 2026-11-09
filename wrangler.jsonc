@@ -11,7 +11,8 @@
   "triggers": {"crons": []},
   "vars": {
     "DISCORD_APPLICATION_ID": "1563907646757666926",
-    "ROVALRA_MATCH_DISCOVERY_ENABLED": "true"
+    "ROVALRA_MATCH_DISCOVERY_ENABLED": "true",
+    "ROBLOX_HYBRID_ENRICH_ENABLED": "true"
   },
   "d1_databases": [
     {

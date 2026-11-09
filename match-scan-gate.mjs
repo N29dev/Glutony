@@ -22,7 +22,10 @@ const safeReason = error =>
    'scanner_storage_unavailable'].includes(error?.code)
     ? error.code : 'server_api_error';
 
-export async function withServerScanGate(db, run) {
+export async function withServerScanGate(db, run, {minimumAttemptIntervalMs = 0} = {}) {
+  // A negative/unbounded input must never lift the shared throttle.
+  const minInterval = Number.isFinite(minimumAttemptIntervalMs)
+    ? Math.max(0,Math.min(60*60_000,Math.floor(minimumAttemptIntervalMs))) : 0;
   if (!db) throw new Error('D1 scan coordination unavailable');
   // On missing table or DB failure, fail closed: never burst directly to Roblox.
   await db.prepare(
@@ -33,15 +36,17 @@ export async function withServerScanGate(db, run) {
   const token = crypto.randomUUID();
   const claim = await db.prepare(
     'UPDATE server_scan_gate SET lease_token=?,lease_until=?,next_allowed_at=?,last_attempt_at=? ' +
-    'WHERE gate_key=? AND lease_until<=? AND next_allowed_at<=?'
-  ).bind(token, now + LEASE_MS, now + MIN_GAP_MS, now, KEY, now, now).run();
+    'WHERE gate_key=? AND lease_until<=? AND next_allowed_at<=? ' +
+    'AND (last_attempt_at IS NULL OR last_attempt_at<=?)'
+  ).bind(token, now + LEASE_MS, now + MIN_GAP_MS, now, KEY, now, now, now - minInterval).run();
 
   if (!changed(claim)) {
     const status = await db.prepare(
-      'SELECT next_allowed_at,lease_until,last_error FROM server_scan_gate WHERE gate_key=?'
+      'SELECT next_allowed_at,lease_until,last_attempt_at,last_error FROM server_scan_gate WHERE gate_key=?'
     ).bind(KEY).first();
     const busy = Number(status?.lease_until || 0) > now;
-    const delay = Math.max(Number(status?.lease_until || 0), Number(status?.next_allowed_at || 0)) - now;
+    const delay = Math.max(Number(status?.lease_until || 0), Number(status?.next_allowed_at || 0),
+      Number(status?.last_attempt_at || 0) + minInterval) - now;
     return {status: busy ? 'busy' : 'cooldown', retryAfterSeconds:seconds(delay),
       reason:status?.last_error || (busy ? 'scan_in_progress' : 'scan_cooldown')};
   }
