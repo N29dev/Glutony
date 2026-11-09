@@ -23,6 +23,10 @@ const reads=[];
 const changed=n=>({meta:{changes:n}});
 const db={prepare(sql){
  return {
+  async first(){
+    if(sql.includes('FROM rovalra_discovery_gate'))return gate?{...gate}:null;
+    throw Error('Unexpected unbound read '+sql);
+  },
   async run(){
     if(sql.startsWith('INSERT OR IGNORE INTO rovalra_discovery_gate'))return changed(0);
     throw Error('Unexpected unbound write '+sql);
