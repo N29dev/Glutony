@@ -74,6 +74,7 @@ const buildResult = (mode, rows, now) => {
     servers,scanned:regions,maxPages:COUNTRIES.length,
     hasMore:partial||dedup.size>SERVER_LIMIT||regions<COUNTRIES.length,
     regionCoverage:regions,regionTotal:COUNTRIES.length,
+    warmingUp:servers.length===0 && regions<COUNTRIES.length,
     notes:'Provider-observed server IDs only. Player counts, open slots and ping are unknown. Observations may be older than five minutes.'
   };
 };
@@ -83,6 +84,39 @@ async function readAll(db,mode,now) {
     'WHERE mode=? AND observed_at>=? ORDER BY observed_at DESC'
   ).bind(mode,now-OBSERVATION_TTL_MS).all();
   return result?.results||[];
+}
+// On a cold start the 25-minute live cache may contain only zero-server
+// countries. Prefer countries which historically returned matches, instead of
+// waiting for the round-robin cursor to travel back to active regions.
+// Historical observations determine scan ORDER only; they never become live IDs.
+async function preferredColdStartCountries(db,now){
+  try{
+    const response=await db.prepare(
+      'SELECT mode,country_code,observed_at,data_json FROM rovalra_discovery_regions '+
+      'WHERE observed_at >= ? ORDER BY observed_at DESC'
+    ).bind(now-24*60*60_000).all();
+    const scores=new Map();
+    for(const row of (response.results||[]).slice(0,COUNTRIES.length*2)){
+      const code=row?.country_code;
+      if(!COUNTRIES.includes(code))continue;
+      const when=Number(row.observed_at);
+      if(!Number.isFinite(when)||when>now+60_000 ||now-when<GLOBAL_GAP_MS)continue;
+      let data;
+      try{data=JSON.parse(row.data_json)}catch{continue}
+      const count=Array.isArray(data?.servers)?data.servers.length:0;
+      if(count===0)continue;
+      const old=scores.get(code)||{count:0,at:0};
+      old.count+=Math.min(100,count);
+      old.at=Math.max(old.at,when);
+      scores.set(code,old);
+    }
+    return [...scores].sort((a,b)=>b[1].count-a[1].count ||
+      b[1].at-a[1].at).map(([code])=>code);
+  }catch(err){
+    // A priority hint must never break the ordinary bounded rotation.
+    console.warn('RoValra scan priority unavailable:',String(err?.message||err));
+    return [];
+  }
 }
 async function claim(db,now){
   await db.prepare(
@@ -144,7 +178,13 @@ export async function getRoValraDiscovery(env,mode) {
   if(lease){
     let failures=0, advanced=0;
     const i=lease.cursor%COUNTRIES.length;
-    const selected=Array.from({length:MAX_PER_MODE},(_,k)=>COUNTRIES[(i+k)%COUNTRIES.length]);
+    const roundRobin=Array.from({length:COUNTRIES.length},(_,k)=>COUNTRIES[(i+k)%COUNTRIES.length]);
+    // If the requested mode has no fresh servers, fill this scan with
+    // high-yield countries first. Preserve a small, globally gated request
+    // budget and continue the ordinary rotation on subsequent refreshes.
+    const historical=result.servers.length===0
+      ? await preferredColdStartCountries(db,Date.now()) : [];
+    const selected=[...new Set([...historical,...roundRobin])].slice(0,MAX_PER_MODE);
     try {
       // Only a handful of countries per shared refresh: both game modes reuse
       // this scan, avoiding separate bursts when a visitor changes tabs.
