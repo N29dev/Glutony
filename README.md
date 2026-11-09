@@ -286,3 +286,15 @@ The 8v8 and Pro server browser now fetches Roblox **only when someone uses** the
 - **Before deploying:** apply `0009_server_scan_gate.sql` (as well as any pending earlier migrations) to production `glutony-customs` with `npx wrangler d1 migrations apply glutony-customs --remote`. Without this table, public scans fail closed rather than multiplying requests.
 - `wrangler.jsonc` declares an empty Cron schedule. Deploy the new Worker to remove the old scheduled trigger; confirm in Cloudflare → Workers → glutony → Settings → Triggers.
 - `npm test` covers on-demand scans, D1 gate coordination, cache expiry and recovery from repeated Roblox 429 responses.
+
+
+## RoValra regional BL:R discovery (opt-in deployment flag)
+
+With the Cloudflare Worker variable `ROVALRA_MATCH_DISCOVERY_ENABLED=true`, website requests and Discord `/blr` use bounded RoValra regional discovery for **8v8 and Pro** instead of the rate-limited public Roblox server-list endpoint. Thirst remains unchanged: its native server browser can still obtain real Roblox player counts.
+
+- Only **three country codes per 120-second global discovery batch**, sequentially queried for both game modes (six total provider reads). A single D1 lease, persistent cooldown, and 15-minute backoff on errors prevent parallel traffic from multiplying requests. Countries cycle through US, DE, SG, BR, GB, JP, AU, FR, CA, NL, AE, KR, IN, PL, TR, HK, ID, ZA; coverage is **incremental and incomplete** during a warm-up.
+- Each country snapshot is stored in D1 with an observation time and expires after 25 minutes. Each API response includes `source: "rovalra"`, `countsVerified: false`, and coverage. Per-instance `playing`, `maxPlayers`, `free`, and `ping` are **null**, not invented. Old instances might have closed; users can attempt joins but Roblox may redirect.
+- RoValra returns optional `next_cursor`, but Glutony deliberately does **not** paginate through more results: this keeps provider usage bounded. Avoid claiming global, exhaustive or verified live coverage.
+- Before enabling the flag, apply `migrations/0010_rovalra_discovery.sql` to production D1. If RoValra blocks, disables, or rate-limits requests, stop and honor their terms. To roll back, set `ROVALRA_MATCH_DISCOVERY_ENABLED=false` without removing the older Roblox scanner or cached snapshots.
+- This is a BL:R-focused experimental integration. RoValra's API [terms](https://www.rovalra.com/tou/) prohibit scraping and replacement of their extension; [credit RoValra](https://www.rovalra.com/) and request permission if broader redistribution is needed.
+
