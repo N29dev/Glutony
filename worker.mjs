@@ -1095,7 +1095,7 @@ async function websiteServers(request, env) {
     const snapshotAgeMs = Math.max(0, Date.now() - result.at);
     if (result.source !== 'rovalra' && snapshotAgeMs > MAX_LAST_KNOWN_AGE_MS) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
     // Fetch regional details in a single RoValra batch. Cap it for rate limits.
-    const entries = sampleSpread(result.servers,mode==='main'?24:60);
+    const entries = sampleSpread(result.servers,mode==='main'?24:result.source==='rovalra'?120:60);
     if (result.source !== 'rovalra') {
       for (let i=0; i<Math.min(entries.length, 60); i+=20)
         await attachDetails(result, entries.slice(i, i+20), env);
