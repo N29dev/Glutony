@@ -22,7 +22,12 @@ let gate={key:'global',cursor:15,failures:0,next_allowed_at:0,lease_until:0,leas
 const reads=[];
 const changed=n=>({meta:{changes:n}});
 const db={prepare(sql){
- return {bind(...params){return {
+ return {
+  async run(){
+    if(sql.startsWith('INSERT OR IGNORE INTO rovalra_discovery_gate'))return changed(0);
+    throw Error('Unexpected unbound write '+sql);
+  },
+  bind(...params){return {
   async first(){
    if(sql.includes('FROM rovalra_discovery_gate'))return gate?{...gate}:null;
    throw Error('Unexpected first '+sql);
