@@ -4,6 +4,7 @@ import {STATS_COMMAND, recordStats, botStatsMessage, serverStatsMessage} from '.
 import {INFO_COMMAND, infoMessage} from './info.mjs';
 import {techFetch} from './tech-api.mjs';
 import {accountFetch, accountProfile} from './account-auth.mjs';
+import {withServerScanGate} from './match-scan-gate.mjs';
 
 /**
  * Glutony — Discord user-installable Roblox 8v8 and Pro server browser on Cloudflare Workers.
@@ -172,8 +173,11 @@ async function readDurableSnapshot(env, cacheKey) {
     return null;
   }
 }
-async function storeDurableSnapshot(env, cacheKey, data) {
-  if (!env.CUSTOMS_DB) return;
+async function storeDurableSnapshot(env, cacheKey, data, strict = false) {
+  if (!env.CUSTOMS_DB) {
+    if (strict) throw new Error('D1 database is not configured.');
+    return;
+  }
   try {
     await env.CUSTOMS_DB.prepare(
       'INSERT INTO server_snapshots (cache_key, snapshot, updated_at) VALUES (?, ?, ?) ' +
@@ -181,6 +185,7 @@ async function storeDurableSnapshot(env, cacheKey, data) {
     ).bind(cacheKey, JSON.stringify(data), Date.now()).run();
   } catch (err) {
     console.warn('Durable server snapshot write unavailable:', String(err?.message || err));
+    if (strict) throw err;
   }
 }
 
@@ -300,57 +305,104 @@ async function getServers(env, mode = '8v8', refresh = false) {
   finally { pendingScans.delete(cacheKey); }
 }
 
-// RoValra has a separate, optional server-details endpoint. It reports region,
-
-// Scheduled scans own Roblox requests for 8v8 and Pro. User-facing traffic
-// reads shared snapshots instead of multiplying requests across Worker isolates.
-async function getSharedServers(env, mode = '8v8', refresh = false) {
-  if (mode === 'main' || !env.CUSTOMS_DB) return getServers(env, mode, refresh);
-  const {placeId, pages} = config(env, mode);
-  const keys = [`${mode}:${placeId}:1`];
-  if (pages !== 1) keys.push(`${mode}:${placeId}:${pages}`); // legacy snapshot during rollout
-  const shared = await Promise.all(keys.map(key => readDurableSnapshot(env, key)));
-  const fallback = await Promise.all(keys.map(key => readSnapshot(key)));
-  const candidates = [...shared, ...keys.map(key => memoryCaches.get(key)), ...fallback]
-    .filter(s => s && Array.isArray(s.servers) && Number.isFinite(s.at) &&
-      s.placeId === placeId && s.mode === mode && s.at <= Date.now() + 60_000);
-  const result = candidates.sort((a, b) => b.at - a.at)[0];
-  if (!result) {
-    const error = new Error('No saved server list yet. The scheduled refresh is preparing the next sample.');
-    error.code = 'server_snapshot_unavailable';
+// A website visit or /blr command can initiate one bounded request if the
+// previous sample is old. D1 protects the entire account against concurrent
+// scans and preserves Roblox's rate-limit backoff across Worker isolates.
+async function scanPublicPage(env, mode, cacheKey) {
+  const {placeId} = config(env, mode);
+  const url = new URL(`https://games.roblox.com/v1/games/${placeId}/servers/Public`);
+  url.searchParams.set('limit', '100');
+  url.searchParams.set('sortOrder', 'Asc');
+  url.searchParams.set('excludeFullGames', 'true');
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: {'accept':'application/json','user-agent':'GlutonyServerBrowser/1.1'},
+      signal:AbortSignal.timeout(6500),
+    });
+  } catch (_) {
+    const error = new Error('Roblox did not respond. Please try again later.');
+    error.code = 'roblox_timeout';
     throw error;
   }
-  if (Date.now() - result.at > MAX_LAST_KNOWN_AGE_MS) throw expiredServerSample(
-    new Error('The scheduled scan has not produced a fresh sample.'));
+  if (response.status === 429) {
+    const error = new Error('Roblox is rate-limiting server requests. Please try again later.');
+    error.code = 'roblox_rate_limited';
+    error.retryAfterMs = retryDelayMs(response.headers.get('retry-after'));
+    throw error;
+  }
+  if (response.status === 401 || response.status === 403) {
+    const error = new Error('Roblox denied API access from Cloudflare.');
+    error.code = 'roblox_access_denied';
+    throw error;
+  }
+  if (!response.ok) {
+    const error = new Error(`Roblox server API returned HTTP ${response.status}.`);
+    error.code = 'roblox_http_error';
+    throw error;
+  }
+  let payload;
+  try { payload = await response.json(); }
+  catch (_) {
+    const error = new Error('Roblox returned invalid JSON.');
+    error.code = 'roblox_invalid_response';
+    throw error;
+  }
+  if (!payload || !Array.isArray(payload.data)) {
+    const error = new Error('Roblox returned an unexpected server response.');
+    error.code = 'roblox_invalid_response';
+    throw error;
+  }
+  const servers = [...new Map(payload.data.map(normalizedServer).filter(Boolean).map(s=>[s.id,s])).values()];
+  const result = {
+    mode, placeId, at:Date.now(), maxPages:1, scanned:1,
+    servers, hasMore:Boolean(payload.nextPageCursor),
+  };
+  // Persistence is mandatory for a successful scan: subsequent visitors and
+  // Discord interactions must observe the same result, even in other colos.
+  await storeDurableSnapshot(env, cacheKey, result, true);
+  memoryCaches.set(cacheKey, result);
+  console.log('On-demand '+mode+' sample:',servers.length,'servers; checked',new Date(result.at).toISOString());
   return result;
 }
 
-// One Cron event per minute, alternating modes. Limit to one server-list page
-// per tick; the website and Discord bot do not initiate their own Roblox scans.
-async function scanScheduledServers(env, scheduledTime) {
-  // Delete expired HMAC caller pseudonyms; no raw IP addresses are persisted.
-  const tick = new Date(scheduledTime);
-  if (tick.getUTCHours() === 0 && tick.getUTCMinutes() === 0 && env.CUSTOMS_DB) {
-    try {
-      await env.CUSTOMS_DB.prepare('DELETE FROM shared_region_lookup_quota WHERE window_start < ?')
-        .bind(Date.now() - 24 * 3600_000).run();
-      await env.CUSTOMS_DB.prepare('DELETE FROM shared_server_regions WHERE expires_at < ?')
-        .bind(Date.now() - 24 * 3600_000).run();
-    } catch (error) {
-      console.warn('Expired region cache cleanup unavailable:',String(error?.message || error));
-    }
-  }
-  const mode = tick.getUTCMinutes() % 2 === 0 ? '8v8' : 'pro';
+async function getSharedServers(env, mode = '8v8', refresh = false) {
+  // The legacy Main mode and local tests without D1 retain their existing
+  // behavior. Production 8v8/Pro always use the shared D1 scan gate.
+  if (mode === 'main' || !env.CUSTOMS_DB) return getServers(env, mode, refresh);
+  const {placeId} = config(env, mode);
+  const cacheKey = `${mode}:${placeId}:1`;
+  let snapshot = await readDurableSnapshot(env, cacheKey);
+  if (snapshot && Date.now() - snapshot.at < SOFT_CACHE_MS) return snapshot;
+  let attempt;
   try {
-    const result = await getServers({...env, ROBLOX_MAX_PAGES: '1'}, mode, true);
-    console.log('Scheduled '+mode+' sample:', result.servers.length,
-      'servers; checked', new Date(result.at).toISOString());
+    attempt = await withServerScanGate(env.CUSTOMS_DB,
+      () => scanPublicPage(env, mode, cacheKey));
   } catch (error) {
-    console.warn('Scheduled '+mode+' scan failed:', String(error?.message || error));
+    console.warn('Shared scan coordination unavailable:',String(error?.message||error));
+    attempt = {status:'failed',reason:'scanner_storage_unavailable',retryAfterSeconds:30};
   }
+  if (attempt.status === 'updated') snapshot = attempt.result;
+  else {
+    // A different isolate may have finished while this request waited.
+    const shared = await readDurableSnapshot(env, cacheKey);
+    if (shared && (!snapshot || shared.at > snapshot.at)) snapshot = shared;
+  }
+  const age = snapshot ? Date.now() - snapshot.at : Infinity;
+  if (snapshot && age <= MAX_SNAPSHOT_AGE_MS) return snapshot;
+  const error = new Error(attempt.status === 'busy'
+    ? 'Another server refresh is in progress. Please retry shortly.'
+    : attempt.reason === 'roblox_rate_limited'
+      ? 'Roblox is rate-limiting Glutony. Server search is cooling down.'
+      : 'No verified server sample is available yet. Retry after the cooldown.');
+  error.code = snapshot ? 'server_sample_expired' : 'server_snapshot_unavailable';
+  error.reason = attempt.reason || 'server_api_error';
+  error.retryAfterSeconds = attempt.retryAfterSeconds || 30;
+  throw error;
 }
 
-// place_version, and first_seen. This information can be unavailable/stale.
+// RoValra has a separate, optional server-details endpoint. It reports region,
+// // place_version, and first_seen. This information can be unavailable/stale.
 // Never send Discord or Roblox credentials to it.
 function safeLocationPart(value) {
   if (typeof value !== 'string') return '';
@@ -940,7 +992,9 @@ const websiteHeaders = {
   'x-content-type-options': 'nosniff',
 };
 function siteJson(data, status = 200) {
-  return new Response(JSON.stringify(data), {status, headers:{...websiteHeaders, 'content-type':'application/json; charset=utf-8'}});
+  return new Response(JSON.stringify(data), {status, headers:{...websiteHeaders,
+    ...(status >= 400 ? {'cache-control':'no-store'} : {}),
+    'content-type':'application/json; charset=utf-8'}});
 }
 
 const REGION_CODES = Object.freeze({EU:'Europe',NA:'North America',SA:'South America',AS:'Asia',OC:'Oceania',ME:'Middle East',AF:'Africa'});
@@ -990,7 +1044,7 @@ async function regionReportFetch(request,env) {
   try{
     const {placeId}=config(env,mode),now=Date.now();
     // Must be a recently sampled server, and not a stale/unknown ID supplied by the client.
-    const cacheKey=`${mode}:${placeId}:${config(env,mode).pages}`;
+    const cacheKey=`${mode}:${placeId}:1`;
     const snapshot=await readDurableSnapshot(env,cacheKey)||await readSnapshot(cacheKey)||memoryCaches.get(cacheKey);
     if(!snapshot||now-snapshot.at>10*60_000||!snapshot.servers?.some(s=>s.id.toLowerCase()===serverId.toLowerCase()))
       return siteJson({error:'Server is not in a recent snapshot. Refresh server list.',code:'stale_server'},409);
@@ -1057,12 +1111,15 @@ async function websiteServers(request, env) {
     console.error('Website server API failed for '+mode+':', error);
     // Expose only safe error categories, not raw upstream payloads or secrets.
     if (error?.code === 'server_sample_expired') return siteJson({
-      error: 'The last server sample is too old.',
+      error: error.message || 'The last server sample is too old.',
       code: 'server_sample_expired',
       reason: error.reason || 'server_api_error',
+      retryAfterSeconds: error.retryAfterSeconds || 30,
     }, 503);
     if (error?.code === 'server_snapshot_unavailable') return siteJson({
       error: error.message, code: error.code,
+      reason: error.reason || 'server_api_error',
+      retryAfterSeconds: error.retryAfterSeconds || 30,
     }, 503);
     return siteJson({error:'Server list unavailable.', code:serverFailureCode(error)}, 503);
   }
@@ -1308,9 +1365,6 @@ async function registerCommand(request, env) {
 }
 
 export default {
-  async scheduled(event, env, ctx) {
-    await scanScheduledServers(env, event.scheduledTime);
-  },
   async fetch(request, env, ctx) {
     if (new URL(request.url).pathname === '/api/account/region-report') return regionReportFetch(request,env);
     const accountResponse = await accountFetch(request, env);
@@ -1351,4 +1405,4 @@ export default {
   },
 };
 
-export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanScheduledServers, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, readSharedRegionDetails, storeSharedRegionDetails, sharedRegionStorageStatus, reserveSharedLookupBudget, websiteUncachedRegions, detailCache, COMMAND };
+export const _test = { config, memoryCaches, hexBytes, verifyDiscord, equalSecret, normalizedServer, sortServers, joinLinks, joinLanding, listMessage, detailMessage, pagedServers, sampleSpread, getServers, getSharedServers, scanPublicPage, attachDetails, locationFromDetail, datacenterKey, enrichMissingDatacenterDetails, flagEmoji, countryCode, uptimeLabel, getPlayerHeadshots, readSharedRegionDetails, storeSharedRegionDetails, sharedRegionStorageStatus, reserveSharedLookupBudget, websiteUncachedRegions, detailCache, COMMAND };
