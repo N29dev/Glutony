@@ -96,7 +96,8 @@ try{
  reads.length=0;
  await getRoValraDiscovery({CUSTOMS_DB:db},'8v8');
  const nextCountries=reads.filter((_,i)=>i%2===0);
- assert.deepEqual(nextCountries,['HK','ID','ZA']);
+ assert.deepEqual(nextCountries,['DE','SG','GB'],
+   'Next batch expands coverage instead of immediately repeating the US warm-up scan');
  console.log('PASS: 2-hour cold start prioritizes previously productive regions, never stale IDs, and preserves request budget');
 }finally{
  Date.now=originalNow;
