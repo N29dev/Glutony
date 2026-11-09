@@ -626,6 +626,9 @@ async function storeSharedRegionDetails(env, placeId, entries) {
 }
 
 async function attachDetails(result, servers, env) {
+  // Regional discovery already includes first-party RoValra location metadata.
+  // Do not re-query the same provider for details on each website/Discord view.
+  if (result.source === 'rovalra') return;
   if (String(env.ROVALRA_REGIONS_ENABLED || 'true').toLowerCase() === 'false') {
     for (const server of servers) server.regionDiagnostic='disabled';
     return;
@@ -896,7 +899,7 @@ async function renderList(interaction, env, mode, page, sort, refresh) {
   try {
     const result = await getSharedServers(env, mode, refresh);
     const {visible} = pagedServers(result, page, sort);
-    await attachDetails(result, visible, env);
+    if (result.source !== 'rovalra') await attachDetails(result, visible, env);
     await editOriginal(interaction, listMessage(result, page, sort));
   } catch (error) {
     console.error('Glutony list failure:', error);
@@ -912,7 +915,7 @@ async function renderDetail(interaction, env, mode, jobId, page, sort, refresh, 
       await editOriginal(interaction, errorMessage('Server not found', 'The server may have closed or the listing has changed.', `g:b:${result.mode || '8v8'}:${page}:${sort}`));
       return;
     }
-    await attachDetails(result, [server], env);
+    if (result.source !== 'rovalra') await attachDetails(result, [server], env);
     const headshots = await getPlayerHeadshots(server);
     await editOriginal(interaction, detailMessage(result, server, page, sort, headshots, origin));
   } catch (error) {
@@ -1090,7 +1093,7 @@ async function websiteServers(request, env) {
     const result = await getSharedServers(env, mode, false);
     // Never present very old public instances as current matches.
     const snapshotAgeMs = Math.max(0, Date.now() - result.at);
-    if (snapshotAgeMs > MAX_LAST_KNOWN_AGE_MS) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
+    if (result.source !== 'rovalra' && snapshotAgeMs > MAX_LAST_KNOWN_AGE_MS) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
     // Fetch regional details in a single RoValra batch. Cap it for rate limits.
     const entries = sampleSpread(result.servers,mode==='main'?24:60);
     if (result.source !== 'rovalra') {
@@ -1121,7 +1124,7 @@ async function websiteServers(request, env) {
       scanned: result.scanned, hasMore: result.hasMore || result.servers.length > entries.length,
       updatedAt: new Date(result.at).toISOString(),
       stale: Date.now() - result.at > SOFT_CACHE_MS,
-      lastKnown: Date.now() - result.at > MAX_SNAPSHOT_AGE_MS,
+      lastKnown: result.source === 'rovalra' ? false : Date.now() - result.at > MAX_SNAPSHOT_AGE_MS,
       disclaimer: result.source === 'rovalra'
         ? 'RoValra observed these server IDs and regions, but current player counts, free slots, ping and continued availability are unknown. Roblox may ignore the instance ID.'
         : 'Locations and versions are provided by RoValra where available. Roblox may ignore target instance IDs.'
