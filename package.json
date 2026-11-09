@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Unofficial BL:R 8v8 and Pro Discord server browser powered by Cloudflare Workers",
   "scripts": {
-    "test": "node test.mjs && node scheduled.test.mjs && node rovalra-discovery.test.mjs && node shared-regions.test.mjs && node customs.test.mjs && node stats.test.mjs && node --test tech-api.test.mjs",
+    "test": "node test.mjs && node scheduled.test.mjs && node rovalra-discovery.test.mjs && node hybrid-occupancy.test.mjs && node shared-regions.test.mjs && node customs.test.mjs && node stats.test.mjs && node --test tech-api.test.mjs",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev"
   },
