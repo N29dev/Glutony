@@ -8,7 +8,7 @@ export const MIN_ROBLOX_PROBE_INTERVAL_MS = 20 * 60_000;
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
 export async function overlayRecentRobloxOccupancy(env, result) {
-  if (result?.source !== 'rovalra' || !env.CUSTOMS_DB || !Array.isArray(result.servers))return result;
+  if (env.ROBLOX_HYBRID_ENRICH_ENABLED!=='true' || result?.source !== 'rovalra' || !env.CUSTOMS_DB || !Array.isArray(result.servers))return result;
   result.enrichedCount=0;
   result.enrichmentSampleAt=null;
   let row;
