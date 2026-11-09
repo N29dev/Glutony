@@ -184,7 +184,13 @@ export async function getRoValraDiscovery(env,mode) {
     // budget and continue the ordinary rotation on subsequent refreshes.
     const historical=result.servers.length===0
       ? await preferredColdStartCountries(db,Date.now()) : [];
-    const selected=[...new Set([...historical,...roundRobin])].slice(0,MAX_PER_MODE);
+    const priority=[...new Set([...historical,...roundRobin])];
+    // A priority scan must not cause the next normal cycle to immediately
+    // refetch the same countries. Visit unscanned regions first.
+    const recentlyScanned=new Set(rows.filter(row=>now-Number(row.observed_at)<10*60_000)
+      .map(row=>row.country_code));
+    const selected=[...priority.filter(code=>!recentlyScanned.has(code)),
+      ...priority.filter(code=>recentlyScanned.has(code))].slice(0,MAX_PER_MODE);
     try {
       // Only a handful of countries per shared refresh: both game modes reuse
       // this scan, avoiding separate bursts when a visitor changes tabs.
