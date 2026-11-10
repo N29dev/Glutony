@@ -114,12 +114,12 @@ try {
   assert.equal(payload.servers[0].countryCode,'DE');
   assert.ok(payload.servers[0].joinPc.includes('/join?'));
 
-  now+=59_000;
+  now+=29_000;
   result=await getRoValraDiscovery(env,'8v8');
-  assert.equal(calls.length,before,'Page visits within the shared 60-second gate do not rescan');
+  assert.equal(calls.length,before,'Page visits within the shared 30-second gate do not rescan');
   now+=2_000;
   result=await getRoValraDiscovery(env,'8v8');
-  assert.equal(calls.length,12,'A new visitor after 60 seconds triggers the next regional batch');
+  assert.equal(calls.length,12,'A new visitor after 30 seconds triggers the next regional batch');
   assert.equal(result.regionCoverage,6);
   const example=JSON.stringify(result);
   assert.ok(example.includes('United States')&&example.includes('Brazil'));
