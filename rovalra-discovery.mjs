@@ -7,9 +7,9 @@ const COUNTRIES = Object.freeze([
   'IN','PL','TR','HK','ID','ZA'
 ]);
 const MODES = Object.freeze({'8v8':'124087144919678',pro:'99999183305180'});
-const MAX_PER_MODE = 3;
+const COUNTRIES_PER_BATCH = 6;
 const GLOBAL_GAP_MS = 30_000; // Shared across the Discord bot, website, visitors, modes and regions.
-const LEASE_MS = 35_000;
+const LEASE_MS = 90_000; // Covers up to 12 sequential provider requests (including their timeouts).
 const OBSERVATION_TTL_MS = 25 * 60_000;
 const BACKOFF_MS = 15 * 60_000;
 const SERVER_LIMIT = 120;
@@ -190,10 +190,10 @@ export async function getRoValraDiscovery(env,mode) {
     const recentlyScanned=new Set(rows.filter(row=>now-Number(row.observed_at)<10*60_000)
       .map(row=>row.country_code));
     const selected=[...priority.filter(code=>!recentlyScanned.has(code)),
-      ...priority.filter(code=>recentlyScanned.has(code))].slice(0,MAX_PER_MODE);
+      ...priority.filter(code=>recentlyScanned.has(code))].slice(0,COUNTRIES_PER_BATCH);
     try {
-      // Only a handful of countries per shared refresh: both game modes reuse
-      // this scan, avoiding separate bursts when a visitor changes tabs.
+      // Scan six countries for both modes per shared refresh. The global D1 gate
+      // prevents bot and website visits from multiplying provider requests.
       outer:for(const country of selected){
         for(const gameMode of ['8v8','pro']){
           const feed=await fetchRegion(gameMode,country,Date.now());
