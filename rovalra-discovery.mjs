@@ -8,7 +8,7 @@ const COUNTRIES = Object.freeze([
 ]);
 const MODES = Object.freeze({'8v8':'124087144919678',pro:'99999183305180'});
 const MAX_PER_MODE = 3;
-const GLOBAL_GAP_MS = 120_000;
+const GLOBAL_GAP_MS = 60_000; // Shared across all visitors, modes and regions.
 const LEASE_MS = 35_000;
 const OBSERVATION_TTL_MS = 25 * 60_000;
 const BACKOFF_MS = 15 * 60_000;
