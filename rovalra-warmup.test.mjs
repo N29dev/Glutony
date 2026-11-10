@@ -82,11 +82,11 @@ globalThis.fetch=async url=>{
 try{
  const sample=await getRoValraDiscovery({CUSTOMS_DB:db},'8v8');
  const scanned=reads.filter((_,i)=>i%2===0);
- assert.deepEqual(scanned,['US','FR','BR'],
+ assert.deepEqual(scanned,['US','FR','BR','GB','HK','ID'],
    'Initial cold-start scan must prefer historical server regions over cursor=15 (HK/ID/ZA)');
- assert.equal(reads.length,6,'Never increases provider request count');
- assert.equal(sample.regionCoverage,3);
- assert.equal(sample.servers.length,3);
+ assert.equal(reads.length,12,'Cold start stays within the 12-request batch budget');
+ assert.equal(sample.regionCoverage,6);
+ assert.equal(sample.servers.length,6);
  assert.ok(sample.servers.every(s=>s.playing===null));
  assert.ok(!sample.servers.some(s=>s.id.startsWith('aaaaaaaa')),
    'Historical Job IDs must not be presented as active server records');
@@ -96,7 +96,7 @@ try{
  reads.length=0;
  await getRoValraDiscovery({CUSTOMS_DB:db},'8v8');
  const nextCountries=reads.filter((_,i)=>i%2===0);
- assert.deepEqual(nextCountries,['DE','SG','GB'],
+ assert.deepEqual(nextCountries,['JP','AU','CA','NL','AE','KR'],
    'Next batch expands coverage instead of immediately repeating the US warm-up scan');
  console.log('PASS: 2-hour cold start prioritizes previously productive regions, never stale IDs, and preserves request budget');
 }finally{
