@@ -87,9 +87,9 @@ const env={CUSTOMS_DB:db,ROVALRA_MATCH_DISCOVERY_ENABLED:'true',ROVALRA_REGIONS_
 try {
   let result=await getRoValraDiscovery(env,'8v8');
   assert.equal(result.source,'rovalra');
-  assert.equal(result.servers.length,3);
-  assert.equal(result.regionCoverage,3);
-  assert.equal(calls.length,6,'Shared scan queries three countries for both modes');
+  assert.equal(result.servers.length,6);
+  assert.equal(result.regionCoverage,6);
+  assert.equal(calls.length,12,'Shared scan queries six countries for both modes');
   assert.equal(result.servers[0].playing,null);
   assert.equal(result.servers[0].free,null);
   assert.equal(result.servers[0].ping,null);
@@ -97,7 +97,7 @@ try {
   assert.ok(!JSON.stringify(result).includes('datacenter_id'));
   const before=calls.length;
   result=await getRoValraDiscovery(env,'pro');
-  assert.equal(result.servers.length,3,'Pro reuses shared scan');
+  assert.equal(result.servers.length,6,'Pro reuses shared scan');
   assert.equal(calls.length,before);
   result=await getRoValraDiscovery(env,'8v8');
   assert.equal(calls.length,before,'No extra calls for multiple visitors');
@@ -107,11 +107,11 @@ try {
   const payload=await website.json();
   assert.equal(payload.source,'rovalra');
   assert.equal(payload.countsVerified,false);
-  assert.equal(payload.servers.length,3);
+  assert.equal(payload.servers.length,6);
   assert.equal(payload.servers[0].playing,null);
   assert.equal(payload.servers[0].maxPlayers,null);
   assert.equal(payload.servers[0].free,null);
-  assert.equal(payload.servers[0].countryCode,'DE');
+  assert.equal(payload.servers[0].countryCode,'BR');
   assert.ok(payload.servers[0].joinPc.includes('/join?'));
 
   now+=29_000;
@@ -119,20 +119,25 @@ try {
   assert.equal(calls.length,before,'Page visits within the shared 30-second gate do not rescan');
   now+=2_000;
   result=await getRoValraDiscovery(env,'8v8');
-  assert.equal(calls.length,12,'A new visitor after 30 seconds triggers the next regional batch');
-  assert.equal(result.regionCoverage,6);
+  assert.equal(calls.length,24,'A new visitor after 30 seconds triggers the next six-country batch');
+  assert.equal(result.regionCoverage,12);
+  now+=31_000;
+  result=await getRoValraDiscovery(env,'8v8');
+  assert.equal(calls.length,36,'Three batches cover all 18 countries across both modes');
+  assert.equal(result.regionCoverage,18);
+  assert.equal(result.servers.length,18);
   const example=JSON.stringify(result);
   assert.ok(example.includes('United States')&&example.includes('Brazil'));
 
   now+=61_000;
   fail=true;
   result=await getRoValraDiscovery(env,'8v8');
-  assert.equal(calls.length,13,'Stop immediately on provider rate limit');
+  assert.equal(calls.length,37,'Stop immediately on provider rate limit');
   const failureCalls=calls.length;
   now+=3*60_000;
   result=await getRoValraDiscovery(env,'8v8');
   assert.equal(calls.length,failureCalls,'Shared backoff avoids further requests');
-  assert.ok(result.servers.length>=3,'Prior observations remain viewable with unknown availability');
+  assert.ok(result.servers.length>=6,'Prior observations remain viewable with unknown availability');
   assert.equal(gate.failures,1);
   now+=25*60_000;
   await assert.rejects(()=>getRoValraDiscovery(env,'8v8'),/initial snapshot/);
