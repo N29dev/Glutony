@@ -3,7 +3,7 @@
 // It is NEVER a separate lookup by Job ID, and cannot verify unmatched IDs.
 import {withServerScanGate} from './match-scan-gate.mjs';
 
-export const OCCUPANCY_MAX_AGE_MS = 5 * 60_000;
+export const OCCUPANCY_MAX_AGE_MS = 60_000;
 export const MIN_ROBLOX_PROBE_INTERVAL_MS = 30_000;
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
