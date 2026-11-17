@@ -106,7 +106,7 @@ try {
 
   advance(2*60_000);
   response=await api('8v8');
-  assert.equal(response.status,503,'Never advertise matches older than five minutes');
+  assert.equal(response.status,503,'Never advertise matches older than one minute');
   const cooldown=await response.json();
   assert.equal(cooldown.code,'server_sample_expired');
   assert.equal(cooldown.reason,'roblox_rate_limited');
