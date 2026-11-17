@@ -28,9 +28,9 @@ const MODES = Object.freeze({
 });
 const API = 'https://discord.com/api/v10';
 const PAGE_SIZE = 4;
-// Refresh at 3 minutes, but never advertise servers checked over 5 minutes ago.
-const SOFT_CACHE_MS = 3 * 60_000;
-const MAX_SNAPSHOT_AGE_MS = 5 * 60_000;
+// Never treat player counts more than one minute old as current.
+const SOFT_CACHE_MS = 60_000;
+const MAX_SNAPSHOT_AGE_MS = 60_000;
 const MAX_LAST_KNOWN_AGE_MS = 15 * 60_000; // Clearly labeled fallback only
 const RATE_LIMIT_BACKOFF_MS = 180_000;
 const SNAPSHOT_TTL_SECONDS = 600;
@@ -822,8 +822,8 @@ function listMessage(result, page, sort) {
   const children = [
     textPart(`## ⚽ Glutony · ${MODES[result.mode || '8v8'].title}\n-# Public servers · Select one to join`),
   ];
-  if (result.source === 'rovalra') children.push(textPart(`ℹ️ **RoValra regional discovery.** ${result.enrichedCount||0} of ${result.servers.length} servers matched a Roblox snapshot from the last 5 minutes. Other counts and slots remain unknown; availability is not guaranteed.`));
-  else if (Date.now() - result.at > MAX_SNAPSHOT_AGE_MS) children.push(textPart('⚠️ **Last-known servers only.** This sample is over five minutes old; availability and player counts are unverified.'));
+  if (result.source === 'rovalra') children.push(textPart(`ℹ️ **RoValra regional discovery.** ${result.enrichedCount||0} of ${result.servers.length} servers matched a Roblox snapshot from the last minute. Other counts and slots remain unknown; availability is not guaranteed.`));
+  else if (Date.now() - result.at > MAX_SNAPSHOT_AGE_MS) children.push(textPart('⚠️ **Last-known servers only.** This sample is over one minute old; availability and player counts are unverified.'));
   if (!items.length) children.push(textPart('No joinable servers found in the scanned pages. Try **Refresh**.'));
   for (const [i, s] of visible.entries()) {
     const number = current * PAGE_SIZE + i + 1;
@@ -863,7 +863,7 @@ function detailMessage(result, server, page, sort, headshots, origin = '') {
     {type: 14, divider: true, spacing: 1},
     textPart(result.source === 'rovalra' && !server.occupancyVerified
       ? '### Players and open slots unverified\nThis match was observed by RoValra, not matched in a recent Roblox sample.'
-      : `### ${server.playing} / ${server.maxPlayers} players\n${server.free} slots available · **${pingLabel(server)}** Roblox-reported ping${server.occupancyVerified?' · Sample from last 5 minutes':''}`),
+      : `### ${server.playing} / ${server.maxPlayers} players\n${server.free} slots available · **${pingLabel(server)}** Roblox-reported ping${server.occupancyVerified?' · Sample from last minute':''}`),
     textPart(`**Place version:** ${version}\n**Uptime:** ${age} (estimated from first seen)\n**Server ID:** \`${server.id}\``),
   ];
   if (result.source === 'rovalra') children.push(textPart(server.occupancyVerified
