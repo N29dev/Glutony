@@ -1,7 +1,7 @@
 // Shared Roblox request gate. One D1 row coordinates all 8v8/Pro scans across
 // Cloudflare isolates and modes; website/Discord do not bypass provider backoff.
 const KEY = 'roblox-public-server-list';
-const MIN_GAP_MS = 15_000;
+const MIN_GAP_MS = 30_000;
 const LEASE_MS = 15_000;
 const BACKOFF_BASE_MS = 180_000;
 const BACKOFF_MAX_MS = 60 * 60_000;
