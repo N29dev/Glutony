@@ -4,7 +4,7 @@
 import {withServerScanGate} from './match-scan-gate.mjs';
 
 export const OCCUPANCY_MAX_AGE_MS = 5 * 60_000;
-export const MIN_ROBLOX_PROBE_INTERVAL_MS = 20 * 60_000;
+export const MIN_ROBLOX_PROBE_INTERVAL_MS = 30_000;
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
 export async function overlayRecentRobloxOccupancy(env, result) {
@@ -33,7 +33,7 @@ export async function overlayRecentRobloxOccupancy(env, result) {
     if(!item || typeof item.id!=='string'|| !UUID.test(item.id))continue;
     const playing=item.playing,maxPlayers=item.maxPlayers;
     if(!Number.isInteger(playing)||!Number.isInteger(maxPlayers)
-       ||playing<0||maxPlayers<=playing||maxPlayers>500)continue;
+       ||playing<0||maxPlayers<playing||maxPlayers>500)continue;
     byId.set(item.id.toLowerCase(),{
       playing,maxPlayers,free:maxPlayers-playing,
       ping:Number.isInteger(item.ping)&&item.ping>=0?item.ping:null
