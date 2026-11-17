@@ -81,7 +81,7 @@ try {
   assert.equal(result.servers[1].occupancyVerified,undefined);
   assert.ok(!JSON.stringify(result).includes('not-exposed'),'Never expose Roblox player tokens');
   snapshots.set('8v8:124087144919678:1',{
-    mode:'8v8',placeId:'124087144919678',at:clock,
+    mode:'8v8',placeId:'124087144919678',at:clock-1_000,
     servers:[{id:idB,playing:16,maxPlayers:16,ping:55}]
   });
   result=await overlayRecentRobloxOccupancy(env,makeListing());
