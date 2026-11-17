@@ -89,7 +89,7 @@ try {
   assert.equal(response.status,503,'Global gate spaces out first requests for separate modes');
   assert.equal((await response.json()).code,'server_snapshot_unavailable');
   assert.equal(requests,1);
-  advance(16_000);
+  advance(31_000);
   response=await api('pro');
   assert.equal(response.status,200);
   assert.equal((await response.json()).servers[0].id,idPro);
