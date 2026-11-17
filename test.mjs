@@ -152,7 +152,8 @@ assert.ok(spread[0]<5&&spread.at(-1)>290,'Spread includes first and last page');
 assert.equal(new Set(spread).size,60,'No duplicate sample indices');
 assert.deepEqual(helpers.sampleSpread([1,2,3],24),[1,2,3],'Short lists are unchanged');
 assert.equal(helpers.flagEmoji('BR'),'🇧🇷');
-assert.equal(helpers.normalizedServer({id:server8,playing:16,maxPlayers:16}),null,'Exclude full servers');
+assert.equal(helpers.normalizedServer({id:server8,playing:16,maxPlayers:16})?.free,0,'Include full servers with zero free slots');
+assert.equal(helpers.normalizedServer({id:server8,playing:17,maxPlayers:16}),null,'Reject impossible over-capacity counts');
 
 let response = await invoke({type:2, application_id:env.DISCORD_APPLICATION_ID, token:'8v8', data:{name:'blr',options:[{name:'mode',value:'8v8'}]}});
 assert.equal(response.type,5,'Must acknowledge quickly');
