@@ -80,6 +80,15 @@ try {
   assert.equal(result.servers[1].playing,null);
   assert.equal(result.servers[1].occupancyVerified,undefined);
   assert.ok(!JSON.stringify(result).includes('not-exposed'),'Never expose Roblox player tokens');
+  snapshots.set('8v8:124087144919678:1',{
+    mode:'8v8',placeId:'124087144919678',at:clock,
+    servers:[{id:idB,playing:16,maxPlayers:16,ping:55}]
+  });
+  result=await overlayRecentRobloxOccupancy(env,makeListing());
+  assert.equal(result.enrichedCount,1,'Full servers must receive verified counts');
+  assert.equal(result.servers[1].playing,16);
+  assert.equal(result.servers[1].free,0);
+  assert.equal(result.servers[1].occupancyVerified,true);
   result=await overlayRecentRobloxOccupancy(env,makeListing('pro'));
   assert.equal(result.enrichedCount,0,'Never match data from other modes');
   assert.equal(result.servers[0].playing,null);
