@@ -96,6 +96,39 @@ try {
   result=await overlayRecentRobloxOccupancy(env,makeListing());
   assert.equal(result.enrichedCount,0,'Counts expire after one minute');
 
+  // RoValra may retain old Job IDs even after the Roblox match closes.
+  // A complete Roblox public listing is the current active roster.
+  const idC='22222222-3333-4444-5555-666666666666';
+  snapshots.set('8v8:124087144919678:1',{
+    mode:'8v8',placeId:'124087144919678',at:clock-5_000,scanned:1,hasMore:false,
+    servers:[
+      {id:idA,playing:9,maxPlayers:16,ping:80,playerTokens:['private-token']},
+      {id:idC,playing:2,maxPlayers:16,ping:50}
+    ]
+  });
+  const observed=makeListing();
+  observed.servers[0].region='Miami, Florida, United States';
+  result=await overlayRecentRobloxOccupancy(env,observed);
+  assert.equal(result.countsVerified,true,'A complete Roblox listing verifies the roster');
+  assert.equal(result.rosterSource,'roblox');
+  assert.equal(result.unconfirmedRoValraCount,1,'Stale RoValra-only ID is excluded');
+  assert.equal(result.servers.length,2);
+  assert.deepEqual(new Set(result.servers.map(s=>s.id)),new Set([idA,idC]));
+  assert.equal(result.servers[0].region,'Miami, Florida, United States','Keep RoValra region info');
+  assert.equal(result.servers[0].playing,9);
+  assert.equal(result.servers[1].region,null,'Include new Roblox-only IDs without inventing regions');
+  assert.ok(result.servers.every(s=>s.occupancyVerified));
+  assert.ok(!JSON.stringify(result).includes('private-token'),'Roblox player tokens stay private');
+
+  snapshots.set('8v8:124087144919678:1',{
+    mode:'8v8',placeId:'124087144919678',at:clock-5_000,scanned:1,hasMore:true,
+    servers:[{id:idA,playing:9,maxPlayers:16,ping:80}]
+  });
+  result=await overlayRecentRobloxOccupancy(env,makeListing());
+  assert.equal(result.countsVerified,undefined,'Partial snapshots cannot determine the complete roster');
+  assert.equal(result.servers.length,2,'Keep unverified regional candidates if scan was partial');
+  assert.equal(result.enrichedCount,1);
+
   const scan=async(_env,mode,cacheKey)=>{
     scans++;
     assert.equal(cacheKey,mode+':'+(_env===env?'124087144919678':'unexpected')+':1');
