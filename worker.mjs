@@ -377,7 +377,17 @@ async function getSharedServers(env, mode = '8v8', refresh = false) {
       getRoValraDiscovery(env, mode),
       maybeProbeRobloxOccupancy(env, mode, placeId, scanPublicPage)
     ]);
-    return overlayRecentRobloxOccupancy(env, discovered);
+    const merged = await overlayRecentRobloxOccupancy(env, discovered);
+    if (merged.countsVerified) {
+      // Roblox may expose a newly active Job ID before RoValra sees it.
+      // Use the existing cached/batched RoValra details route for its region.
+      const missing = merged.servers.filter(server=>!server.region).slice(0,30);
+      if (missing.length) {
+        try { await attachDetails(merged, missing, env); }
+        catch (error) { console.warn('Optional region details unavailable:',String(error?.message||error)); }
+      }
+    }
+    return merged;
   }
   // The legacy Main mode and local tests without D1 retain their existing
   // behavior. Production 8v8/Pro always use the shared D1 scan gate.
@@ -822,7 +832,9 @@ function listMessage(result, page, sort) {
   const children = [
     textPart(`## ⚽ Glutony · ${MODES[result.mode || '8v8'].title}\n-# Public servers · Select one to join`),
   ];
-  if (result.source === 'rovalra') children.push(textPart(`ℹ️ **RoValra regional discovery.** ${result.enrichedCount||0} of ${result.servers.length} servers matched a Roblox snapshot from the last minute. Other counts and slots remain unknown; availability is not guaranteed.`));
+  if (result.source === 'rovalra') children.push(textPart(result.countsVerified
+    ? `✅ **Roblox-verified active matches.** All ${result.servers.length} servers came from a complete Roblox public-server scan within the last minute. Locations are enriched with RoValra where available.`
+    : `ℹ️ **RoValra regional discovery.** ${result.enrichedCount||0} of ${result.servers.length} servers matched a Roblox snapshot from the last minute. Others remain unverified and may have closed.`));
   else if (Date.now() - result.at > MAX_SNAPSHOT_AGE_MS) children.push(textPart('⚠️ **Last-known servers only.** This sample is over one minute old; availability and player counts are unverified.'));
   if (!items.length) children.push(textPart('No joinable servers found in the scanned pages. Try **Refresh**.'));
   for (const [i, s] of visible.entries()) {
@@ -831,7 +843,7 @@ function listMessage(result, page, sort) {
     const version = s.details?.version ? ` · v${s.details.version}` : '';
     children.push(textPart(`**${number}. ${regionFlag(s)} ${region}**\n${occupancy(s)} · ${pingLabel(s)}${version}`));
   }
-  children.push(textPart(`-# Page ${current + 1}/${total} · ${items.length} ${result.source==='rovalra'?'provider-observed IDs':'joinable servers'} · ${result.scanned} ${result.source==='rovalra'?'countries':'API pages'} sampled${result.hasMore ? ' · More may exist' : ''}\n-# Locations and version: RoValra · Verified counts and ping: Roblox where available`));
+  children.push(textPart(`-# Page ${current + 1}/${total} · ${items.length} ${result.countsVerified?'Roblox-confirmed servers':result.source==='rovalra'?'provider-observed IDs':'joinable servers'} · ${result.scanned} ${result.source==='rovalra'?'countries':'API pages'} sampled${result.hasMore ? ' · More may exist' : ''}\n-# Locations and version: RoValra · Verified counts and ping: Roblox where available`));
   const rows = [];
   if (visible.length) rows.push(actionRow([{
     type: 3, custom_id: `g:s:${result.mode || '8v8'}:${current}:${sort}`, placeholder: 'Choose a server to view & join',
@@ -1133,14 +1145,16 @@ async function websiteServers(request, env, ctx) {
       mode, placeId: result.placeId, servers, count: servers.length,
       source: result.source || 'roblox', regionCoverage: result.regionCoverage ?? null,
       regionTotal: result.regionTotal ?? null,
-      countsVerified: result.source !== 'rovalra',
+      countsVerified: Boolean(result.countsVerified) || result.source !== 'rovalra',
       enrichedCount: result.enrichedCount ?? 0,
       enrichmentSampleAt: Number.isFinite(result.enrichmentSampleAt) ? new Date(result.enrichmentSampleAt).toISOString() : null,
-      scanned: result.scanned, hasMore: result.hasMore || result.servers.length > entries.length,
+      scanned: result.scanned, hasMore: result.countsVerified ? false : result.hasMore || result.servers.length > entries.length,
       updatedAt: new Date(result.at).toISOString(),
       stale: Date.now() - result.at > SOFT_CACHE_MS,
       lastKnown: result.source === 'rovalra' ? false : Date.now() - result.at > MAX_SNAPSHOT_AGE_MS,
-      disclaimer: result.source === 'rovalra'
+      disclaimer: result.countsVerified
+        ? 'A complete Roblox public-server scan confirms this active roster and its player counts (valid for one minute). RoValra supplies regions and version details where available.'
+        : result.source === 'rovalra'
         ? 'RoValra observed server IDs and locations. Matching Roblox public snapshots can provide recent player counts, free slots, and ping for a subset of IDs; other counts and server availability are unverified.'
         : 'Locations and versions are provided by RoValra where available. Roblox may ignore target instance IDs.'
     });
