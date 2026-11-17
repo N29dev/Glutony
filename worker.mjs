@@ -115,7 +115,7 @@ function config(env, mode = '8v8') {
 function normalizedServer(item) {
   if (!item || typeof item.id !== 'string' || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.id)) return null;
   const playing = Number(item.playing), maxPlayers = Number(item.maxPlayers);
-  if (!Number.isInteger(playing) || !Number.isInteger(maxPlayers) || playing < 0 || maxPlayers <= playing || maxPlayers > 500) return null;
+  if (!Number.isInteger(playing) || !Number.isInteger(maxPlayers) || playing < 0 || maxPlayers < playing || maxPlayers > 500) return null;
   const ping = item.ping !== null && item.ping !== undefined && Number.isFinite(Number(item.ping)) && Number(item.ping) >= 0
     ? Math.round(Number(item.ping)) : null;
   const playerTokens = Array.isArray(item.playerTokens) ? item.playerTokens.filter(t => typeof t === 'string' && t.length < 500).slice(0, 6) : [];
@@ -315,7 +315,7 @@ async function scanPublicPage(env, mode, cacheKey) {
   const url = new URL(`https://games.roblox.com/v1/games/${placeId}/servers/Public`);
   url.searchParams.set('limit', '100');
   url.searchParams.set('sortOrder', 'Asc');
-  url.searchParams.set('excludeFullGames', 'true');
+  url.searchParams.set('excludeFullGames', 'false');
   let response;
   try {
     response = await fetch(url.toString(), {
@@ -369,8 +369,16 @@ async function scanPublicPage(env, mode, cacheKey) {
 }
 
 async function getSharedServers(env, mode = '8v8', refresh = false) {
-  if (['8v8','pro'].includes(mode) && env.CUSTOMS_DB && env.ROVALRA_MATCH_DISCOVERY_ENABLED === 'true')
-    return overlayRecentRobloxOccupancy(env,await getRoValraDiscovery(env,mode));
+  if (['8v8','pro'].includes(mode) && env.CUSTOMS_DB && env.ROVALRA_MATCH_DISCOVERY_ENABLED === 'true') {
+    const {placeId} = config(env, mode);
+    // Run the rate-gated Roblox count refresh while RoValra discovers regions.
+    // Both website and Discord callers see the newly merged snapshot immediately.
+    const [discovered] = await Promise.all([
+      getRoValraDiscovery(env, mode),
+      maybeProbeRobloxOccupancy(env, mode, placeId, scanPublicPage)
+    ]);
+    return overlayRecentRobloxOccupancy(env, discovered);
+  }
   // The legacy Main mode and local tests without D1 retain their existing
   // behavior. Production 8v8/Pro always use the shared D1 scan gate.
   if (mode === 'main' || !env.CUSTOMS_DB) return getServers(env, mode, refresh);
@@ -806,14 +814,6 @@ function pagedServers(result, page, sort) {
   return {items, total, current, visible: items.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE)};
 }
 function pingLabel(s) {return s.ping == null ? 'Unknown ping' : `${s.ping} ms`;}
-function scheduleOptionalOccupancyProbe(ctx,env,mode) {
-  if (ctx?.waitUntil && env?.ROVALRA_MATCH_DISCOVERY_ENABLED==='true'
-      && env?.ROBLOX_HYBRID_ENRICH_ENABLED==='true' && ['8v8','pro'].includes(mode)) {
-    const {placeId}=config(env,mode);
-    // Runs after the request returns; errors cannot take the RoValra list down.
-    ctx.waitUntil(maybeProbeRobloxOccupancy(env,mode,placeId,scanPublicPage));
-  }
-}
 function occupancy(s) {return Number.isInteger(s.playing)&&Number.isInteger(s.maxPlayers)
   ? `${s.playing}/${s.maxPlayers} players · ${s.free} open` : 'Players and slots unknown';}
 
@@ -909,7 +909,6 @@ function responseCallback(type, data) { return json(data === undefined ? { type 
 async function renderList(interaction, env, mode, page, sort, refresh, ctx) {
   try {
     const result = await getSharedServers(env, mode, refresh);
-    if(result.source === 'rovalra')scheduleOptionalOccupancyProbe(ctx,env,mode);
     const {visible} = pagedServers(result, page, sort);
     if (result.source !== 'rovalra') await attachDetails(result, visible, env);
     await editOriginal(interaction, listMessage(result, page, sort));
@@ -1103,7 +1102,6 @@ async function websiteServers(request, env, ctx) {
   if (!MODES[mode]) return siteJson({error:'Unknown mode; choose main, 8v8, or pro.'}, 400);
   try {
     const result = await getSharedServers(env, mode, false);
-    if(result.source === 'rovalra')scheduleOptionalOccupancyProbe(ctx,env,mode);
     // Never present very old public instances as current matches.
     const snapshotAgeMs = Math.max(0, Date.now() - result.at);
     if (result.source !== 'rovalra' && snapshotAgeMs > MAX_LAST_KNOWN_AGE_MS) return siteJson({error:'The last server sample is too old.',code:'server_sample_expired'},503);
