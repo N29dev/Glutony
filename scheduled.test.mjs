@@ -98,8 +98,8 @@ try {
   advance(3*60_000);
   limited=true;
   response=await api('8v8');
-  assert.equal(response.status,200,'Fresh-enough sample survives temporary 429');
-  assert.equal((await response.json()).stale,true);
+  assert.equal(response.status,503,'An expired sample cannot survive a Roblox 429');
+  assert.equal((await response.json()).code,'server_sample_expired');
   assert.equal(requests,3);
   assert.equal(gate.failures,1);
   assert.equal(gate.last_error,'roblox_rate_limited');
