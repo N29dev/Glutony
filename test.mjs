@@ -352,7 +352,7 @@ assert.equal(reusedSample.at,freshSample.at,'Newer shared D1 snapshot takes prio
 assert.equal(calls.filter(c=>c.address.includes('/v1/games/'+place8+'/')).length,beforeSharedCalls,
   'Newer D1 snapshot avoids another Roblox API request');
 
-// Failed Roblox scans must still reject snapshots older than 5 minutes.
+// Failed Roblox scans must still reject snapshots older than one minute.
 helpers.memoryCaches.set(sharedCacheKey,oldSample);
 const failedEnv = {
   ...env,
@@ -376,7 +376,7 @@ try {
 }
 console.log('PASS: isolates reuse shared snapshots, and expired samples are rejected');
 
-// Pro server samples expire after 5 minutes, even when Roblox is rate-limiting.
+// Pro server samples expire after one minute, even when Roblox is rate-limiting.
 const proCacheKey = `pro:${placePro}:1`;
 const proOld = {
   mode:'pro',placeId:placePro,maxPages:1,at:Date.now()-6*60_000,
@@ -396,24 +396,24 @@ try {
   helpers.memoryCaches.set(proCacheKey,proOld);
   const proExpired = await worker.fetch(
     new Request('https://glutony.example/api/servers?mode=pro'),env,{});
-  assert.equal(proExpired.status,503,'Pro samples older than five minutes are rejected');
+  assert.equal(proExpired.status,503,'Pro samples older than one minute are rejected');
   const proExpiredJson = await proExpired.json();
   assert.equal(proExpiredJson.code,'server_sample_expired');
   assert.equal(proExpiredJson.reason,'roblox_rate_limited',
     'Expired Pro results include safe upstream failure categories');
   assert.equal(proRobloxCalls,1,'One Pro scan before rate limiting starts');
 
-  helpers.memoryCaches.set(proCacheKey,{...proOld,at:Date.now()-4*60_000});
+  helpers.memoryCaches.set(proCacheKey,{...proOld,at:Date.now()-40_000});
   const proCached = await worker.fetch(
     new Request('https://glutony.example/api/servers?mode=pro'),env,{});
-  assert.equal(proCached.status,200,'Four-minute-old Pro sample can bridge short rate limit');
+  assert.equal(proCached.status,200,'40-second-old Pro sample can bridge short rate limit');
   assert.equal((await proCached.json()).servers.length,1);
   assert.equal(proRobloxCalls,1,'Backoff suppresses new requests while rate-limited');
 } finally {
   globalThis.fetch = proOriginalFetch;
   helpers.memoryCaches.delete(proCacheKey);
 }
-console.log('PASS: Pro freshness ends after 5 minutes, with Roblox backoff');
+console.log('PASS: Pro freshness ends after one minute, with Roblox backoff');
 
 console.log('PASS: passive region refresh validates server IDs, CORS, and known server metadata');
 
