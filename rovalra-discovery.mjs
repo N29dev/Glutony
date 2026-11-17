@@ -8,7 +8,7 @@ const COUNTRIES = Object.freeze([
 ]);
 const MODES = Object.freeze({'8v8':'124087144919678',pro:'99999183305180'});
 const COUNTRIES_PER_BATCH = 6;
-const GLOBAL_GAP_MS = 30_000; // Shared across the Discord bot, website, visitors, modes and regions.
+const GLOBAL_GAP_MS = 15_000; // Shared across the Discord bot, website, visitors, modes and regions.
 const LEASE_MS = 90_000; // Covers up to 12 sequential provider requests (including their timeouts).
 const OBSERVATION_TTL_MS = 25 * 60_000;
 const BACKOFF_MS = 15 * 60_000;
