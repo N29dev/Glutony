@@ -100,7 +100,7 @@ try {
   assert.equal(scans,1);
   clock+=MIN_ROBLOX_PROBE_INTERVAL_MS-1000;
   probe=await maybeProbeRobloxOccupancy(env,'pro','99999183305180',scan);
-  assert.equal(probe.status,'cooldown','Global 20-minute interval applies across 8v8 and Pro');
+  assert.equal(probe.status,'cooldown','Global 30-second interval applies across 8v8 and Pro');
   assert.equal(scans,1);
   clock+=2000;
   const limited=async()=>{scans++;const e=new Error('Roblox 429');e.code='roblox_rate_limited';e.retryAfterMs=60_000;throw e;};
