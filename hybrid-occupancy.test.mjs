@@ -66,7 +66,7 @@ const makeListing=(mode='8v8',id=idA)=>({
 });
 try {
   snapshots.set('8v8:124087144919678:1',{
-    mode:'8v8',placeId:'124087144919678',at:clock-90_000,servers:[
+    mode:'8v8',placeId:'124087144919678',at:clock-50_000,servers:[
       {id:idA,playing:7,maxPlayers:16,ping:68,playerTokens:['not-exposed']},
       {id:'22222222-3333-4444-5555-666666666666',playing:3,maxPlayers:16,ping:80}
     ]
@@ -94,7 +94,7 @@ try {
   assert.equal(result.servers[0].playing,null);
   clock+=OCCUPANCY_MAX_AGE_MS;
   result=await overlayRecentRobloxOccupancy(env,makeListing());
-  assert.equal(result.enrichedCount,0,'Counts expire after 5 minutes');
+  assert.equal(result.enrichedCount,0,'Counts expire after one minute');
 
   const scan=async(_env,mode,cacheKey)=>{
     scans++;
