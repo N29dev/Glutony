@@ -3,6 +3,7 @@ import {DOWNLOAD_COMMAND, handleDownload} from './download.mjs';
 import {STATS_COMMAND, recordStats, botStatsMessage, serverStatsMessage} from './stats.mjs';
 import {INFO_COMMAND, infoMessage} from './info.mjs';
 import {techFetch} from './tech-api.mjs';
+import {wikiFetch} from './wiki-api.mjs';
 import {accountFetch, accountProfile} from './account-auth.mjs';
 import {withServerScanGate} from './match-scan-gate.mjs';
 import {getRoValraDiscovery} from './rovalra-discovery.mjs';
@@ -1421,6 +1422,8 @@ export default {
     if (new URL(request.url).pathname === '/api/account/region-report') return regionReportFetch(request,env);
     const accountResponse = await accountFetch(request, env);
     if (accountResponse) return accountResponse;
+    const wikiResponse = await wikiFetch(request, env);
+    if (wikiResponse) return wikiResponse;
     const techResponse = await techFetch(request, env);
     if (techResponse) return techResponse;
     const customsResponse = await customsFetch(request, env);
