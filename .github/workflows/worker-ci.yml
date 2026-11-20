@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - 'worker.mjs'
+      - 'wiki-api.mjs'
+      - 'wiki-api.test.mjs'
       - 'test.mjs'
       - 'scheduled.test.mjs'
       - 'match-scan-gate.mjs'
@@ -19,6 +21,8 @@ on:
   pull_request:
     paths:
       - 'worker.mjs'
+      - 'wiki-api.mjs'
+      - 'wiki-api.test.mjs'
       - 'test.mjs'
       - 'scheduled.test.mjs'
       - 'match-scan-gate.mjs'

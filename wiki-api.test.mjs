@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync} from 'node:fs';
+import {wikiFetch,validateAbility} from './wiki-api.mjs';
+const secret='fake-test-key-abcdefghijklmnopqrstuvwxyz-0123456789';
+const origin='https://blr.n29.kz';
+const valid={revision:0,archived:false,name:'Test shot',kit:'Base',testedOn:'2026-11-20',cooldown:0,ballIframes:0.25,playerIframes:null,condition:'On-ball'};
+const db=new DatabaseSync(':memory:');db.exec(readFileSync(new URL('./migrations/0011_wiki_abilities.sql',import.meta.url),'utf8'));
+const env={TECH_ADMIN_KEY:secret,CUSTOMS_DB:{prepare(sql){const s=db.prepare(sql);const wrap=args=>({all:async()=>({results:s.all(...args)}),run:async()=>({meta:s.run(...args)})});return {...wrap([]),bind:(...args)=>wrap(args)};}}};
+const request=(p,method='GET',body,key=secret,from=origin)=>wikiFetch(new Request('https://worker.example'+p,{method,headers:{origin:from,...(key?{authorization:'Bearer '+key}:{}),...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})}),env);
+test('validation keeps zero and unknown separate; rejects broken dates and URLs',()=>{
+ const now=new Date('2026-11-21');assert.equal(validateAbility(valid,now).cooldown,0);assert.equal(validateAbility(valid,now).playerIframes,null);
+ for(const bad of [{cooldown:-1},{cooldown:'5'},{testedOn:'2026-02-30'},{testedOn:'2026-11-22'},{evidence:'javascript:alert(1)'},{name:''}])assert.equal(validateAbility({...valid,...bad},now),null);
+});
+test('authorized write, public read, conflict, history, archive and restoration',async()=>{
+ const p='/api/wiki/admin/styles/nagi/test-shot';const pub='/api/wiki/styles/nagi';
+ assert.equal((await request(p,'PUT',valid,null)).status,403);
+ assert.equal((await request(p,'PUT',valid,secret,'https://bad.example')).status,403);
+ assert.equal((await request('/api/wiki/admin/session')).status,200);
+ assert.equal((await request(p,'PUT',valid)).status,200);
+ assert.equal((await request(p,'PUT',valid)).status,409);
+ let current=(await (await request(pub,'GET',null,null)).json()).entries[0];assert.equal(current.cooldown,0);assert.equal(current.revision,1);
+ assert.equal((await request(p,'PUT',{...valid,revision:1,cooldown:5})).status,200);
+ assert.equal((await request(p,'PUT',{...valid,revision:2,archived:true})).status,200);
+ assert.deepEqual((await (await request(pub,'GET',null,null)).json()).entries,[]);
+ const history=(await (await request(p+'/history')).json()).entries;assert.equal(history.length,3);
+ assert.equal((await request(p,'PUT',{...history[2],revision:3})).status,200);
+ current=(await (await request(pub,'GET',null,null)).json()).entries[0];assert.equal(current.revision,4);assert.equal(current.cooldown,0);
+ assert.equal((await request('/api/wiki/styles/not-real')).status,404);
+});
