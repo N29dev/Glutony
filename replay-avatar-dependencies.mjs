@@ -8,7 +8,7 @@ const meshProps=new Set(['meshid','meshcontent','basemeshid','basemeshcontent','
 const textureProps=new Set(['texture','textureid','texturecontent','shirtTemplate'.toLowerCase(),'pantstemplate','graphic','colormap','colormapcontent','normalmap','normalmapcontent','metalnessmap','metalnessmapcontent','roughnessmap','roughnessmapcontent','overlaytextureid','basetextureid','alphamap','alphamapcontent']);
 function roleFor(cls,prop){
  if(!visualClasses.has(cls))return null;
- const p=prop.toLowerCase();return meshProps.has(p)?'mesh':textureProps.has(p)?'texture':null;
+ const p=prop.toLowerCase().replace(/__(?:id|content)$/,'');return meshProps.has(p)?'mesh':textureProps.has(p)?'texture':null;
 }
 function assetId(value){
  const m=String(value).trim().match(/^(?:rbxassetid:\/\/|https?:\/\/(?:www\.)?roblox\.com\/asset\/?\?id=|https:\/\/assetdelivery\.roblox\.com\/v[12]\/asset\/?\?id=)([1-9][0-9]{0,15})$/i);
@@ -66,7 +66,7 @@ export function collectAvatarReferences(bytes,zstd){
  }else if(/^\s*(?:<\?xml[^>]*>\s*)?<roblox(?:\s|>)/i.test(DECODER.decode(bytes.subarray(0,256)))){
   // Only Content or legacy String properties within explicitly supported visual
   // classes. Reject XML entities/DTD and do not parse script or free-form values.
-  const xml=DECODER.decode(bytes);if(/<!DOCTYPE|<!ENTITY/i.test(xml))throw Error('Unsupported XML');
+  const xml=DECODER.decode(bytes).replace(/<!--[\s\S]*?-->/g,'');if(/<!DOCTYPE|<!ENTITY|<!\[CDATA\[/i.test(xml))throw Error('Unsupported XML');
   const stack=[];const tokens=/<Item\b[^>]*\bclass\s*=\s*["']([A-Za-z0-9_]+)["'][^>]*>|<\/Item\s*>|<(Content|ContentId|string)\s+name=["']([A-Za-z0-9_]+)["']\s*>([\s\S]*?)<\/\2\s*>/gi;
   for(const m of xml.matchAll(tokens)){
    if(m[1]){if(stack.length>=128)throw Error('XML depth limit');stack.push(m[1]);continue}
