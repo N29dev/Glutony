@@ -18,7 +18,7 @@ function reserve(ip){
  budget.set(ip,used+1);globalCount++;return true;
 }
 async function json(url,options={}){
- const r=await fetch(url,{...options,redirect:'error',signal:AbortSignal.timeout(9000)});
+ const r=await fetch(url,{...options,redirect:'manual',signal:AbortSignal.timeout(9000)});
  if(!r.ok){await r.body?.cancel();throw Object.assign(Error('Upstream '+r.status),{status:r.status})}
  return r.json();
 }
@@ -46,7 +46,7 @@ function safeLocation(value){
  try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&!u.hash&&/^[a-z0-9-]+\.rbxcdn\.com$/.test(u.hostname)&&u.href.length<=2048?u.href:null}catch{return null}
 }
 async function boundedBytes(url){
- const r=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(12000)});
+ const r=await fetch(url,{redirect:'manual',signal:AbortSignal.timeout(12000)});
  if(!r.ok)throw Error('CDN '+r.status);
  if(Number(r.headers.get('Content-Length'))>limit)throw Error('Asset size limit');
  const reader=r.body?.getReader();if(!reader)throw Error('Empty asset');
