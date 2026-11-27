@@ -1502,8 +1502,36 @@ async function replayPublicAsset(request,ctx){
  }catch{return error('Public asset temporarily unavailable',502)}
 }
 
+
+/* Fixed, status-only Open Cloud smoke test. No raw asset, signed URL or secret
+ * is returned, and callers cannot select arbitrary IDs. */
+async function replayAssetAuthCheck(request,env,ctx){
+ const headers={'Access-Control-Allow-Origin':'https://blr.n29.kz','Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
+ const reply=(v,status=200)=>new Response(JSON.stringify(v),{status,headers});
+ if(request.method!=='GET')return reply({error:'Method not allowed'},405);
+ if(!env.ROBLOX_ASSET_API_KEY)return reply({configured:false},503);
+ const key=new Request(new URL('/api/replay/asset-auth-check-result-v1',request.url));
+ const hit=await caches.default.match(key);if(hit)return hit;
+ const ids=['17723103997','15901064855','72061689269424'];
+ const results=[];
+ for(const id of ids){
+  try{
+   const r=await fetch('https://apis.roblox.com/asset-delivery-api/v1/assetId/'+id,{headers:{'x-api-key':env.ROBLOX_ASSET_API_KEY,Accept:'application/json'},redirect:'manual',signal:AbortSignal.timeout(7000)});
+   let locations=0,format='unknown';
+   if(r.ok&&r.headers.get('Content-Type')?.includes('json')){
+    const d=await r.json();locations=Array.isArray(d.locations)?d.locations.length:0;format=locations?'locations':typeof d.location==='string'?'location':'json';
+   }else{format=r.status>=300&&r.status<400?'redirect':'binary';await r.body?.cancel();}
+   results.push({assetId:id,status:r.status,format,locations});
+  }catch{results.push({assetId:id,status:0,format:'network-error'})}
+ }
+ const out=reply({configured:true,results});
+ ctx.waitUntil(caches.default.put(key,new Response(out.clone().body,{headers:{...headers,'Cache-Control':'public,max-age=120'}})).catch(()=>{}));
+ return out;
+}
+
 export default {
   async fetch(request, env, ctx) {
+    if(new URL(request.url).pathname==='/api/replay/asset-auth-check')return replayAssetAuthCheck(request,env,ctx);
     if(new URL(request.url).pathname==='/api/replay/asset')return replayPublicAsset(request,ctx);
     if(new URL(request.url).pathname==='/api/replay/avatar')return replayAvatarLookup(request,ctx);
     if (new URL(request.url).pathname === '/api/account/region-report') return regionReportFetch(request,env);
