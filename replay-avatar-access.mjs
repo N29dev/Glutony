@@ -71,19 +71,24 @@ async function grantFor(userId,id){
   if(m.type!==list[id]||!roots.has(m.type))return null;
   return {root:id,owner:m.owner,role:'root',depth:0,type:m.type};
  }
- const g=await readCache('grant-v1',userId+'/'+id);
- if(!g||!Object.hasOwn(list,g.root)||g.depth>2)return null;
+ const direct=await readCache('grant-v1',userId+'/'+id);
+ const candidates=[];if(direct&&Object.hasOwn(list,direct.root)&&direct.depth<=2)candidates.push(direct);
+ // Reuse verified references when different players equip the same catalog item.
+ if(!candidates.length){
+  const manifests=await Promise.all(Object.keys(list).map(root=>readCache('manifest-v1',root)));
+  for(const manifest of manifests){if(!manifest||!Object.hasOwn(list,manifest.root))continue;const ref=manifest.refs?.find(r=>r.id===id);if(ref)candidates.push({root:manifest.root,owner:manifest.owner,role:ref.role,depth:1})}
+ }
+ if(!candidates.length)return null;
  const m=await metadata(id);
- if(m.owner!==g.owner&&!m.publicDomain)return null;
- if(g.role==='mesh'&&m.type!==4)return null;
- if(g.role==='texture'&&![1,13].includes(m.type))return null;
- return {...g,type:m.type};
+ for(const g of candidates){if(m.owner!==g.owner&&!m.publicDomain)continue;if(g.role==='mesh'&&m.type!==4)continue;if(g.role==='texture'&&![1,13].includes(m.type))continue;return {...g,type:m.type};}
+ return null;
 }
 async function recordReferences(userId,g,locations){
  if(g.depth>=2||g.role==='mesh'||g.type===1)return;
  // Inspect the same representation that will be supplied to the renderer.
  const bytes=await boundedBytes(locations[0].location);
  const refs=collectAvatarReferences(bytes,decompress);
+ if(g.depth===0){const existing=await readCache('manifest-v1',g.root);const merged=new Map((existing?.owner===g.owner?existing.refs:[]).map(r=>[r.id,r]));for(const r of refs)merged.set(r.id,r);if(merged.size>256)throw Error('Avatar manifest limit');await saveCache('manifest-v1',g.root,{root:g.root,owner:g.owner,refs:[...merged.values()]},900)}
  await Promise.all(refs.filter(r=>r.id!==g.root).map(async r=>{
   const existing=await readCache('grant-v1',userId+'/'+r.id);
   if(existing&&existing.root===g.root&&existing.depth<=g.depth+1)return;
