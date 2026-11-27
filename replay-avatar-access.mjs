@@ -80,7 +80,9 @@ async function grantFor(userId,id){
  }
  if(!candidates.length)throw Object.assign(Error('No parsed visual reference for this outfit'),{status:403});
  const m=await metadata(id);
- for(const g of candidates){if(m.owner!==g.owner&&!m.publicDomain)continue;if(g.role==='mesh'&&m.type!==4)continue;if(g.role==='texture'&&![1,13].includes(m.type))continue;return {...g,type:m.type};}
+ // Roblox-owned catalog roots can reference meshes uploaded by a different creator.
+ // This exception still requires a parsed reference and a matching visual asset type.
+ for(const g of candidates){if(m.owner!==g.owner&&!m.publicDomain&&g.owner!=='User:1')continue;if(g.role==='mesh'&&m.type!==4)continue;if(g.role==='texture'&&![1,13].includes(m.type))continue;return {...g,type:m.type};}
  const g=candidates[0];throw Object.assign(Error('Dependency '+g.role+' type '+m.type+' root '+g.root+' creator '+g.owner+' vs '+m.owner),{status:403});
 }
 async function recordReferences(userId,g,locations){
