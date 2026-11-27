@@ -1435,7 +1435,7 @@ async function replayAvatarLookup(request,ctx){
   let userId=id;
   if(!userId){const d=await get('https://users.roblox.com/v1/usernames/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({usernames:[name],excludeBannedUsers:true})});userId=String(d.data?.[0]?.id||'');if(!validId(userId))return respond({error:'Username not found'},404);}
   const api='https://avatar.roblox.com';
-  const bodyPromise=get(api+'/v4/avatar/users/'+userId+'?selectionTypes=AvatarModel').catch(()=>null);
+  const bodyPromise=get(api+'/v4/avatar/users/'+userId+'?selectionTypes=0&selectionTypes=1&selectionTypes=2&selectionTypes=3&selectionTypes=4&selectionTypes=5&selectionTypes=6').catch(()=>null);
   const thumbPromise=get('https://thumbnails.roblox.com/v1/users/avatar?userIds='+userId+'&size=420x420&format=Png&isCircular=false').catch(()=>null);
   const [body,thumb]=await Promise.all([bodyPromise,thumbPromise]);
   function extractColors(d){
@@ -1451,8 +1451,9 @@ async function replayAvatarLookup(request,ctx){
   if(!Object.keys(colors).length){const legacy=await get(api+'/v2/avatar/users/'+userId+'/avatar').catch(()=>null);colors=extractColors(legacy);}
   let image=thumb?.data?.[0]?.state==='Completed'?thumb.data[0].imageUrl:null;
   if(typeof image!=='string'||!/^https:\/\/[a-z0-9-]+\.rbxcdn\.com\//i.test(image))image=null;
-  if(!Object.keys(colors).length&&!image)return respond({error:'Appearance unavailable'},502);
-  const response=respond({userId,colors,image});response.headers.set('Cache-Control','public, max-age=3600');
+  // Identity is still useful when appearance endpoints are unavailable.
+  const appearanceAvailable=!!(Object.keys(colors).length||image);
+  const response=respond({userId,colors,image,appearanceAvailable});response.headers.set('Cache-Control','public, max-age='+ (appearanceAvailable?3600:120));
   ctx.waitUntil(cache.put(key,response.clone()).catch(()=>{}));
   if(!id){const idKey=new Request(url.origin+'/api/replay/avatar?id='+userId);ctx.waitUntil(cache.put(idKey,response.clone()).catch(()=>{}));}
   return response;
