@@ -73,7 +73,21 @@ async function verifiedCreator(rootOwner,depOwner){
   let owner=await readCache('group-owner-v1',group);
   if(!owner){const d=await json('https://groups.roblox.com/v1/groups/'+group);if(String(d.id)!==group)return false;owner={id:String(d.owner?.userId||'')};await saveCache('group-owner-v1',group,owner,900)}
   return owner;
- }).then(owner=>owner?.id===user).catch(()=>false);
+ }).then(async owner=>{
+  if(owner?.id===user)return true;
+  // Public role membership can identify a group's catalog collaborators.
+  // Ordinary members are not sufficient: require a privileged creative role.
+  const cacheId=group+'/'+user;
+  return single('group-collaborator:'+cacheId,async()=>{
+   const hit=await readCache('group-collaborator-v1',cacheId);
+   if(hit)return hit.allowed===true;
+   const d=await json('https://groups.roblox.com/v2/users/'+user+'/groups/roles');
+   const r=Array.isArray(d.data)?d.data.find(v=>String(v.group?.id)===group)?.role:null;
+   const allowed=!!r&&Number.isInteger(r.rank)&&r.rank>1&&(r.rank>=200||/\b(?:developer|designer|creator|ugc|artist|builder|uploader|admin|owner|manager)\b/i.test(String(r.name||'')));
+   await saveCache('group-collaborator-v1',cacheId,{allowed},900);
+   return allowed;
+  });
+ }).catch(()=>false);
 }
 async function grantFor(userId,id){
  const list=await outfit(userId);
