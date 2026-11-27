@@ -1,3 +1,4 @@
+import {resolveReplayAvatarAsset} from './replay-avatar-access.mjs';
 import {customsInteraction, customsFetch} from './customs.mjs';
 import {DOWNLOAD_COMMAND, handleDownload} from './download.mjs';
 import {STATS_COMMAND, recordStats, botStatsMessage, serverStatsMessage} from './stats.mjs';
@@ -1504,6 +1505,12 @@ async function replayPublicAsset(request,env,ctx){
  if(request.method!=='GET')return error('Only GET supported',405);
  const q=new URL(request.url),url=replayPublicAssetUrl(q.searchParams.get('url'));if(!url)return error('Unsupported public asset URL',400);
  const format=q.searchParams.get('format')||'';if(format&&!/^[a-zA-Z0-9_,-]{1,120}$/.test(format))return error('Invalid format',400);
+ if(url.hostname==='assetdelivery.roblox.com'&&q.searchParams.has('userId')){
+  const result=await resolveReplayAvatarAsset(request,url,format,env);
+  if(result.status===200)return new Response(JSON.stringify({locations:result.locations}),{headers:{...cors,'Content-Type':'application/json','Cache-Control':'no-store'}});
+  return error(result.error||'Avatar asset unavailable',result.status);
+ }
+ // Legacy compatibility for earlier lab versions during rollout.
  if(url.hostname==='assetdelivery.roblox.com'&&REPLAY_APPROVED_TRIAL_ASSETS.has(url.searchParams.get('id'))&&env.ROBLOX_ASSET_API_KEY&&!url.searchParams.has('version')){
   try{
    const result=await replayTrialAssetLocation(url,format,env);
