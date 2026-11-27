@@ -1417,8 +1417,51 @@ async function registerCommand(request, env) {
   });
 }
 
+
+/* Narrow public Roblox avatar lookup for optional offline replay appearance.
+ * No credentials, arbitrary URLs, replay data, or live game information. */
+async function replayAvatarLookup(request,ctx){
+ const origin='https://blr.n29.kz',headers={'Access-Control-Allow-Origin':origin,'Content-Type':'application/json','Cache-Control':'no-store','Vary':'Origin'};
+ const respond=(data,status=200)=>new Response(JSON.stringify(data),{status,headers});
+ if(request.headers.get('Origin')!==origin)return respond({error:'Origin not allowed'},403);
+ if(request.method!=='GET')return respond({error:'Method not allowed'},405);
+ const url=new URL(request.url),id=url.searchParams.get('id'),name=url.searchParams.get('name');
+ const validId=v=>typeof v==='string'&&/^[1-9][0-9]{0,15}$/.test(v);
+ if((id&&name)||(!validId(id)&&!(id===null&&/^[A-Za-z0-9_]{3,20}$/.test(name||''))))return respond({error:'Invalid identity'},400);
+ const cache=caches.default,key=new Request(url.origin+'/api/replay/avatar?'+(id?'id='+id:'name='+name.toLowerCase()));
+ const hit=await cache.match(key);if(hit){const h=new Headers(hit.headers);h.set('Access-Control-Allow-Origin',origin);return new Response(hit.body,{status:hit.status,headers:h})}
+ const get=async(u,options={})=>{const r=await fetch(u,{...options,signal:AbortSignal.timeout(7000),headers:{Accept:'application/json',...(options.headers||{})}});if(!r.ok)throw Error('Roblox upstream '+r.status);return r.json()};
+ try{
+  let userId=id;
+  if(!userId){const d=await get('https://users.roblox.com/v1/usernames/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({usernames:[name],excludeBannedUsers:true})});userId=String(d.data?.[0]?.id||'');if(!validId(userId))return respond({error:'Username not found'},404);}
+  const api='https://avatar.roblox.com';
+  const bodyPromise=get(api+'/v4/avatar/users/'+userId+'?selectionTypes=AvatarModel').catch(()=>null);
+  const thumbPromise=get('https://thumbnails.roblox.com/v1/users/avatar?userIds='+userId+'&size=420x420&format=Png&isCircular=false').catch(()=>null);
+  const [body,thumb]=await Promise.all([bodyPromise,thumbPromise]);
+  function extractColors(d){
+   const roots=[d?.avatarModel,d?.avatar?.avatarModel,d?.avatar,d?.data?.avatarModel,d?.data,d];
+   const keys=['head','torso','leftArm','rightArm','leftLeg','rightLeg'];
+   for(const root of roots){
+    const raw=root?.bodyColor3s||root?.bodyColors;if(!raw)continue;const colors={};
+    for(const k of keys){let v=raw[k+'Color3']??raw[k+'Color']??raw[k];if(typeof v==='string'&&/^#?[0-9a-f]{6}$/i.test(v))colors[k]='#'+v.replace(/^#/,'');else if(v&&typeof v==='object'){const a=[v.r??v.R,v.g??v.G,v.b??v.B];if(a.every(n=>Number.isFinite(n)&&n>=0&&n<=1))colors[k]='#'+a.map(n=>Math.round(n*255).toString(16).padStart(2,'0')).join('');}}
+    if(Object.keys(colors).length)return colors;
+   }return {};
+  }
+  let colors=extractColors(body);
+  if(!Object.keys(colors).length){const legacy=await get(api+'/v2/avatar/users/'+userId+'/avatar').catch(()=>null);colors=extractColors(legacy);}
+  let image=thumb?.data?.[0]?.state==='Completed'?thumb.data[0].imageUrl:null;
+  if(typeof image!=='string'||!/^https:\/\/[a-z0-9-]+\.rbxcdn\.com\//i.test(image))image=null;
+  if(!Object.keys(colors).length&&!image)return respond({error:'Appearance unavailable'},502);
+  const response=respond({userId,colors,image});response.headers.set('Cache-Control','public, max-age=3600');
+  ctx.waitUntil(cache.put(key,response.clone()).catch(()=>{}));
+  if(!id){const idKey=new Request(url.origin+'/api/replay/avatar?id='+userId);ctx.waitUntil(cache.put(idKey,response.clone()).catch(()=>{}));}
+  return response;
+ }catch{return respond({error:'Avatar lookup temporarily unavailable'},502)}
+}
+
 export default {
   async fetch(request, env, ctx) {
+    if(new URL(request.url).pathname==='/api/replay/avatar')return replayAvatarLookup(request,ctx);
     if (new URL(request.url).pathname === '/api/account/region-report') return regionReportFetch(request,env);
     const accountResponse = await accountFetch(request, env);
     if (accountResponse) return accountResponse;
