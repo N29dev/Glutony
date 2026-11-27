@@ -81,7 +81,7 @@ async function grantFor(userId,id){
  if(!candidates.length)throw Object.assign(Error('No parsed visual reference for this outfit'),{status:403});
  const m=await metadata(id);
  for(const g of candidates){if(m.owner!==g.owner&&!m.publicDomain)continue;if(g.role==='mesh'&&m.type!==4)continue;if(g.role==='texture'&&![1,13].includes(m.type))continue;return {...g,type:m.type};}
- throw Object.assign(Error('Visual reference exists but asset type or creator did not pass verification'),{status:403});
+ const g=candidates[0];throw Object.assign(Error('Dependency '+g.role+' type '+m.type+' root '+g.root+' creator '+g.owner+' vs '+m.owner),{status:403});
 }
 async function recordReferences(userId,g,locations){
  if(g.depth>=2||g.role==='mesh'||g.type===1)return;
