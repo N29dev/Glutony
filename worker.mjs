@@ -1479,7 +1479,9 @@ function replayPublicAssetUrl(value){
 /* First authenticated rendering trial: only the exact public catalog items
  * observed in the requested avatar. No arbitrary ID, version or account-private
  * asset is sent to Open Cloud. Additional items need a verified public policy. */
-const REPLAY_APPROVED_TRIAL_ASSETS=new Set(['17723103997','15901064855','72061689269424','77880182025450','95493457438207','140235077954033','105395395875920','108363680224601']);
+const REPLAY_APPROVED_TRIAL_ASSETS=new Set(['17723103997','15901064855','72061689269424','77880182025450','95493457438207','140235077954033','105395395875920','108363680224601',
+ // Mesh and texture references requested during the live render of the approved public outfit.
+ '17722928739','117082630852383','75097605834074','15901064828','16367833385','91434570053916','78505406513428','100080236046620','108681181592495','91790195871679','108453062775915','93182456364549','101112631905869','78202274591458']);
 async function replayTrialAssetLocation(url,format,env){
  const id=url.searchParams.get('id');
  if(!env.ROBLOX_ASSET_API_KEY||!REPLAY_APPROVED_TRIAL_ASSETS.has(id)||url.searchParams.has('version'))return null;
