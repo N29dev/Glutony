@@ -6,7 +6,7 @@ const valid=v=>typeof v==='string'&&/^[1-9][0-9]{0,15}$/.test(v);
 const pending=new Map(),budget=new Map();
 let globalWindow=0,globalCount=0;
 const limit=12*1024*1024;
-const synthetic=(namespace,id)=>new Request('https://replay-avatar-cache.invalid/'+namespace+'/'+encodeURIComponent(id));
+const synthetic=(namespace,id)=>new Request('https://glutony.scp343hey.workers.dev/__replay_avatar_cache__/'+namespace+'/'+encodeURIComponent(id));
 async function readCache(ns,id){const r=await caches.default.match(synthetic(ns,id));return r?await r.json():null}
 async function saveCache(ns,id,data,seconds){await caches.default.put(synthetic(ns,id),new Response(JSON.stringify(data),{headers:{'Cache-Control':'public, max-age='+seconds,'Content-Type':'application/json'}}))}
 function single(key,fn){if(pending.has(key))return pending.get(key);const p=Promise.resolve().then(fn).finally(()=>pending.delete(key));pending.set(key,p);return p}
