@@ -1475,13 +1475,40 @@ function replayPublicAssetUrl(value){
  if(/^[a-z0-9-]+\.rbxcdn\.com$/.test(u.hostname)&&/^\/[A-Za-z0-9_./%-]{1,512}$/.test(u.pathname))return u;
  return null;
 }
-async function replayPublicAsset(request,ctx){
+
+/* First authenticated rendering trial: only the exact public catalog items
+ * observed in the requested avatar. No arbitrary ID, version or account-private
+ * asset is sent to Open Cloud. Additional items need a verified public policy. */
+const REPLAY_APPROVED_TRIAL_ASSETS=new Set(['17723103997','15901064855','72061689269424','77880182025450','95493457438207','140235077954033','105395395875920','108363680224601']);
+async function replayTrialAssetLocation(url,format,env){
+ const id=url.searchParams.get('id');
+ if(!env.ROBLOX_ASSET_API_KEY||!REPLAY_APPROVED_TRIAL_ASSETS.has(id)||url.searchParams.has('version'))return null;
+ const target=new URL('https://apis.roblox.com/asset-delivery-api/v1/assetId/'+id);
+ const representation=url.searchParams.get('contentRepresentationPriorityList');if(representation)target.searchParams.set('contentRepresentationPriorityList',representation.replaceAll(' ','+'));
+ const headers={'x-api-key':env.ROBLOX_ASSET_API_KEY,Accept:'application/json'};
+ if(format)headers['Roblox-AssetFormat']=format;
+ const r=await fetch(target.href,{headers,redirect:'manual',signal:AbortSignal.timeout(12000)});
+ if(!r.ok){await r.body?.cancel();return {status:r.status};}
+ const payload=await r.json();
+ const locations=Array.isArray(payload.locations)?payload.locations:typeof payload.location==='string'?[{location:payload.location}]:[];
+ const safe=locations.map(v=>({location:v.location})).filter(v=>{const u=replayPublicAssetUrl(v.location);return u&&/^[a-z0-9-]+\.rbxcdn\.com$/.test(u.hostname)});
+ return safe.length?{status:200,locations:safe}:{status:502};
+}
+
+async function replayPublicAsset(request,env,ctx){
  const origin='https://blr.n29.kz',cors={'Access-Control-Allow-Origin':origin,'Vary':'Origin','X-Content-Type-Options':'nosniff'};
  const error=(message,status)=>new Response(JSON.stringify({error:message}),{status,headers:{...cors,'Content-Type':'application/json','Cache-Control':'no-store'}});
  if(request.headers.get('Origin')!==origin)return error('Origin not allowed',403);
  if(request.method!=='GET')return error('Only GET supported',405);
  const q=new URL(request.url),url=replayPublicAssetUrl(q.searchParams.get('url'));if(!url)return error('Unsupported public asset URL',400);
  const format=q.searchParams.get('format')||'';if(format&&!/^[a-zA-Z0-9_,-]{1,120}$/.test(format))return error('Invalid format',400);
+ if(url.hostname==='assetdelivery.roblox.com'&&REPLAY_APPROVED_TRIAL_ASSETS.has(url.searchParams.get('id'))&&env.ROBLOX_ASSET_API_KEY&&!url.searchParams.has('version')){
+  try{
+   const result=await replayTrialAssetLocation(url,format,env);
+   if(result?.status===200)return new Response(JSON.stringify({locations:result.locations}),{headers:{...cors,'Content-Type':'application/json','Cache-Control':'no-store'}});
+   if(result)return error('Open Cloud avatar asset HTTP '+result.status,result.status===401||result.status===403?403:result.status===404?404:result.status===429?429:502);
+  }catch{return error('Open Cloud avatar asset temporarily unavailable',502)}
+ }
  const key=new Request(q.origin+q.pathname+'?url='+encodeURIComponent(url.href)+'&format='+encodeURIComponent(format));
  const cache=caches.default,hit=await cache.match(key);if(hit)return hit;
  try{
@@ -1532,7 +1559,7 @@ async function replayAssetAuthCheck(request,env,ctx){
 export default {
   async fetch(request, env, ctx) {
     if(new URL(request.url).pathname==='/api/replay/asset-auth-check')return replayAssetAuthCheck(request,env,ctx);
-    if(new URL(request.url).pathname==='/api/replay/asset')return replayPublicAsset(request,ctx);
+    if(new URL(request.url).pathname==='/api/replay/asset')return replayPublicAsset(request,env,ctx);
     if(new URL(request.url).pathname==='/api/replay/avatar')return replayAvatarLookup(request,ctx);
     if (new URL(request.url).pathname === '/api/account/region-report') return regionReportFetch(request,env);
     const accountResponse = await accountFetch(request, env);
