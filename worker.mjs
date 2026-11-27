@@ -1470,7 +1470,7 @@ function replayPublicAssetUrl(value){
   return [...u.searchParams].every(([k,v])=>k==='selectionTypes'&&/^[0-6]$/.test(v))?u:null;
  }
  if(u.hostname==='assetdelivery.roblox.com'&&/^\/v[12]\/asset\/?$/.test(u.pathname)){
-  return /^[1-9][0-9]{0,15}$/.test(u.searchParams.get('id')||'')&&[...u.searchParams].every(([k,v])=>['id','version'].includes(k)&&/^\d{1,16}$/.test(v))?u:null;
+  return /^[1-9][0-9]{0,15}$/.test(u.searchParams.get('id')||'')&&[...u.searchParams].every(([k,v])=>k==='contentRepresentationPriorityList'?v.length<=2048&&/^[A-Za-z0-9+/= ]+$/.test(v):['id','version'].includes(k)&&/^\d{1,16}$/.test(v))?u:null;
  }
  if(/^[a-z0-9-]+\.rbxcdn\.com$/.test(u.hostname)&&/^\/[A-Za-z0-9_./%-]{1,512}$/.test(u.pathname))return u;
  return null;
@@ -1481,7 +1481,7 @@ async function replayPublicAsset(request,ctx){
  if(request.headers.get('Origin')!==origin)return error('Origin not allowed',403);
  if(request.method!=='GET')return error('Only GET supported',405);
  const q=new URL(request.url),url=replayPublicAssetUrl(q.searchParams.get('url'));if(!url)return error('Unsupported public asset URL',400);
- const format=q.searchParams.get('format')||'';if(format&&!/^[a-zA-Z0-9_,-]{1,80}$/.test(format))return error('Invalid format',400);
+ const format=q.searchParams.get('format')||'';if(format&&!/^[a-zA-Z0-9_,-]{1,120}$/.test(format))return error('Invalid format',400);
  const key=new Request(q.origin+q.pathname+'?url='+encodeURIComponent(url.href)+'&format='+encodeURIComponent(format));
  const cache=caches.default,hit=await cache.match(key);if(hit)return hit;
  try{
@@ -1491,7 +1491,7 @@ async function replayPublicAsset(request,ctx){
    if(r.status>=300&&r.status<400){const loc=r.headers.get('Location');if(!loc)return error('Invalid asset redirect',502);const next=replayPublicAssetUrl(new URL(loc,current).href);if(!next)return error('Unsupported asset redirect',502);current=next;continue}
    break;
   }
-  if(!r?.ok)return error('Roblox denied or could not serve this public asset',r?.status===401||r?.status===403?403:r?.status===404?404:502);
+  if(!r?.ok)return error('Roblox asset upstream HTTP '+(r?.status||'unknown'),r?.status===401||r?.status===403?403:r?.status===404?404:r?.status===429?429:502);
   const limit=12*1024*1024;if(Number(r.headers.get('Content-Length'))>limit)return error('Asset exceeds 12 MiB',413);
   const reader=r.body?.getReader();if(!reader)return error('Empty asset',502);
   const parts=[];let n=0;try{while(true){const v=await reader.read();if(v.done)break;n+=v.value.byteLength;if(n>limit){await reader.cancel();return error('Asset exceeds 12 MiB',413)}parts.push(v.value)}}finally{reader.releaseLock()}
