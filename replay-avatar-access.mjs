@@ -64,6 +64,17 @@ async function openCloud(url,format,env){
  if(!locations.length)throw Error('Missing asset download location');
  return locations;
 }
+async function verifiedCreator(rootOwner,depOwner){
+ if(rootOwner===depOwner||rootOwner==='User:1')return true;
+ if(!rootOwner.startsWith('Group:')||!depOwner.startsWith('User:'))return false;
+ const group=rootOwner.slice(6),user=depOwner.slice(5);
+ if(!valid(group)||!valid(user))return false;
+ return single('group-owner:'+group,async()=>{
+  let owner=await readCache('group-owner-v1',group);
+  if(!owner){const d=await json('https://groups.roblox.com/v1/groups/'+group);if(String(d.id)!==group)return false;owner={id:String(d.owner?.userId||'')};await saveCache('group-owner-v1',group,owner,900)}
+  return owner;
+ }).then(owner=>owner?.id===user).catch(()=>false);
+}
 async function grantFor(userId,id){
  const list=await outfit(userId);
  if(Object.hasOwn(list,id)){
@@ -82,7 +93,7 @@ async function grantFor(userId,id){
  const m=await metadata(id);
  // Roblox-owned catalog roots can reference meshes uploaded by a different creator.
  // This exception still requires a parsed reference and a matching visual asset type.
- for(const g of candidates){if(m.owner!==g.owner&&!m.publicDomain&&g.owner!=='User:1')continue;if(g.role==='mesh'&&m.type!==4)continue;if(g.role==='texture'&&![1,13].includes(m.type))continue;return {...g,type:m.type};}
+ for(const g of candidates){if(!m.publicDomain&&!await verifiedCreator(g.owner,m.owner))continue;if(g.role==='mesh'&&m.type!==4)continue;if(g.role==='texture'&&![1,13].includes(m.type))continue;return {...g,type:m.type};}
  const g=candidates[0];throw Object.assign(Error('Dependency '+g.role+' type '+m.type+' root '+g.root+' creator '+g.owner+' vs '+m.owner),{status:403});
 }
 async function recordReferences(userId,g,locations){
